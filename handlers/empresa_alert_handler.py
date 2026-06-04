@@ -85,20 +85,24 @@ class EmpresaAlertHandler:
             
             # Extraer datos principales de la estructura del backend
             alert_data = message_data.get("alert", {})
+            alert_managers_raw = message_data.get("alert_managers", []) or []
             alert_id = alert_data.get("_id", "N/A")
-            alert_name = alert_data.get("tipo_alerta", "Alerta")  # Usar tipo_alerta como nombre
+            alert_name = alert_data.get("nombre_alerta") or alert_data.get("tipo_alerta", "Alerta")
             empresa_nombre = alert_data.get("empresa_nombre", "La Empresa")
             sede = alert_data.get("sede", "")
             usuarios = alert_data.get("numeros_telefonicos", [])
             usuarios_normalizados = self._normalize_usuarios_list(usuarios)
+            managers_normalizados = self._normalize_usuarios_list(alert_managers_raw)
+            manager_phone_set = {m.get("numero") for m in managers_normalizados if m.get("numero")}
             topics_hardware = alert_data.get("topics_otros_hardware", [])
             descripcion = alert_data.get("descripcion", "")
-            
+
             self.logger.info(f"📋 Datos de activación extraídos:")
             self.logger.info(f"   🚨 Alert ID: {alert_id}")
             self.logger.info(f"   📛 Tipo: {alert_name}")
             self.logger.info(f"   📝 Descripción: {descripcion}")
-            self.logger.info(f"   👥 Usuarios: {len(usuarios_normalizados)}")
+            self.logger.info(f"   👥 Usuarios sede: {len(usuarios_normalizados)}")
+            self.logger.info(f"   🛡️ Managers empresa: {len(managers_normalizados)}")
             self.logger.info(f"   📡 Hardware: {len(topics_hardware)}")
             self.logger.info(f"   🏢 Empresa: {empresa_nombre}")
             self.logger.info(f"   🏛️ Sede: {sede}")
@@ -112,7 +116,8 @@ class EmpresaAlertHandler:
             if usuarios_normalizados:
                 template_recipients = [
                     usuario for usuario in usuarios_normalizados
-                    if not telefono_creador or usuario.get("numero") != telefono_creador
+                    if (not telefono_creador or usuario.get("numero") != telefono_creador)
+                    and usuario.get("numero") not in manager_phone_set
                 ]
 
                 if template_recipients:
@@ -125,16 +130,34 @@ class EmpresaAlertHandler:
                     self.logger.info("ℹ️ Sin destinatarios para plantilla de alerta creada")
             else:
                 self.logger.info("ℹ️ No hay usuarios para notificar por WhatsApp")
-            
-            # 2. Crear cache masivo para todos los usuarios - solo si hay usuarios
+
+            # 1b. Notificar a managers (todos los de la empresa) - NO modifica su cache
+            manager_notify_success = True
+            if managers_normalizados:
+                manager_recipients = [
+                    m for m in managers_normalizados
+                    if not telefono_creador or m.get("numero") != telefono_creador
+                ]
+                if manager_recipients:
+                    manager_notify_success = self._send_alert_created_template(
+                        recipients=manager_recipients,
+                        alert_info=alert_data,
+                        creator_name=creador_nombre
+                    )
+
+            # 2. Crear cache masivo para usuarios de la sede (excluye managers para respetar su foco)
             cache_success = True
-            if usuarios_normalizados:
+            cache_targets = [
+                u for u in usuarios_normalizados
+                if u.get("numero") not in manager_phone_set
+            ]
+            if cache_targets:
                 cache_success = self._create_bulk_cache_empresa(
                     alert_data=alert_data,
-                    usuarios=usuarios_normalizados
+                    usuarios=cache_targets
                 )
             else:
-                self.logger.info("ℹ️ No hay usuarios para crear cache")
+                self.logger.info("ℹ️ No hay usuarios para crear cache (todos son managers o lista vacía)")
 
             # 3. Enviar comandos MQTT a dispositivos hardware
             mqtt_success = True
@@ -147,7 +170,7 @@ class EmpresaAlertHandler:
                 self.logger.info("ℹ️ No hay hardware para activar por MQTT")
 
             # Actualizar estadísticas
-            if template_success and cache_success and mqtt_success:
+            if template_success and cache_success and mqtt_success and manager_notify_success:
                 self.processed_count += 1
                 self.logger.info("✅ Activación por empresa procesada exitosamente")
                 return True

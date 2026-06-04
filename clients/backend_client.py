@@ -508,7 +508,31 @@ class BackendClient:
     def patch(self, endpoint: str, data: Optional[Dict] = None) -> Optional[Dict]:
         """Realizar petición PATCH"""
         return self._make_request('PATCH', endpoint, data=data)
-    
+
+    def manager_list_active_alerts(self, telefono: Optional[str] = None, usuario_id: Optional[str] = None) -> Optional[Dict]:
+        """Lista la última alerta activa por sede para un manager"""
+        try:
+            payload = {}
+            if telefono:
+                payload["telefono"] = telefono
+            if usuario_id:
+                payload["usuario_id"] = usuario_id
+            response = self.post("/api/mqtt-alerts/manager/active-by-sede", data=payload)
+            return response if isinstance(response, dict) else None
+        except Exception:
+            return None
+
+    def manager_switch_focus(self, telefono: str, alert_id: str) -> Optional[Dict]:
+        """Cambia el foco de alerta del manager en el cache de WhatsApp"""
+        try:
+            response = self.post("/api/mqtt-alerts/manager/switch-focus", data={
+                "telefono": telefono,
+                "alert_id": alert_id
+            })
+            return response if isinstance(response, dict) else None
+        except Exception:
+            return None
+
     def _clear_token(self):
         """Limpiar el token de los headers después de usarlo"""
         if 'Authorization' in self.session.headers:

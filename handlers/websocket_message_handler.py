@@ -179,6 +179,22 @@ class WebSocketMessageHandler:
 
         return False
 
+    def _has_alert_manager_permission(self, payload: Optional[Dict]) -> bool:
+        """Determinar si el payload contiene permisos de manager de alertas"""
+        if not isinstance(payload, dict):
+            return False
+
+        role_data = None
+        if "rol" in payload:
+            role_data = payload.get("rol")
+        elif "data" in payload and isinstance(payload["data"], dict):
+            role_data = payload["data"].get("rol")
+
+        if isinstance(role_data, dict):
+            return bool(role_data.get("is_alert_manager"))
+
+        return False
+
     def _send_permission_denied_message(self, phone: str, user: str, action: str) -> None:
         """Notificar al usuario que no tiene privilegios para la acción solicitada"""
         if not self.whatsapp_service:
@@ -498,6 +514,7 @@ class WebSocketMessageHandler:
         #es para crear alarma
         exist_alert = cached_info["data"]
         is_creator = self._has_creator_permission(cached_info)
+        is_alert_manager = self._has_alert_manager_permission(cached_info)
         if "alert_active" in exist_alert:
             id_user = exist_alert["id"]
             alert_create = exist_alert["alert_active"]
@@ -621,7 +638,7 @@ class WebSocketMessageHandler:
                     if opcion == "APAGAR":
                         if not is_creator:
                             self._send_permission_denied_message(number, user, "apagar la alarma")
-                            self._send_options_user(number=number, user=user, can_manage_alarm=False)
+                            self._send_options_user(number=number, user=user, can_manage_alarm=False, is_alert_manager=is_alert_manager)
                             return
                         self._send_create_down_alarma(alert=data_alert,data_user=cached_info,list_users=data_user)
                     elif opcion == "UBICACION":
@@ -629,7 +646,7 @@ class WebSocketMessageHandler:
                     elif opcion == "EMBARCADO":
                         data_user_not_you = [u for u in data_alert["numeros_telefonicos"] if u["numero"] != number]
                         self.backend_client.update_user_status(alert_id=exist_alert["info_alert"]["alert_id"],
-                                                                usuario_id = exist_alert["id"], 
+                                                                usuario_id = exist_alert["id"],
                                                                 embarcado = True)
                         self.whatsapp_service.update_number_cache(
                             phone = number,
@@ -637,8 +654,20 @@ class WebSocketMessageHandler:
                             empresa_id=cached_info.get("data", {}).get("empresa_id")
                         )
                         self._send_bulk_team(list_users=data_user_not_you,message="Estoy camino a la emergencia",name_made=user,type_message="text")
+                    elif opcion == "CAMBIAR_ALERTA":
+                        if not is_alert_manager:
+                            self._send_permission_denied_message(number, user, "cambiar de alerta")
+                            self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=False)
+                            return
+                        self._send_manager_alert_picker(number=number, user=user, usuario_id=id_user)
+                    elif opcion.startswith("SWITCH_ALERT_"):
+                        if not is_alert_manager:
+                            self._send_permission_denied_message(number, user, "cambiar de alerta")
+                            return
+                        target_alert_id = opcion.replace("SWITCH_ALERT_", "", 1)
+                        self._handle_manager_switch(number=number, user=user, target_alert_id=target_alert_id, is_creator=is_creator, is_alert_manager=is_alert_manager)
 
-                
+
                 elif isinstance(exist_alert.get("disponible"), bool) and not exist_alert["disponible"]:
                     #quiere decir que mando un mensaje cuando aun no puede hablar 
                     data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{})
@@ -680,7 +709,7 @@ class WebSocketMessageHandler:
                             "HELP"
                         ]
                         if body_text.upper() in comandos_opciones:
-                            self._send_options_user(number=number,user=user,can_manage_alarm=is_creator)
+                            self._send_options_user(number=number,user=user,can_manage_alarm=is_creator,is_alert_manager=is_alert_manager)
                         else:
                             data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{})
                             data_user = [u for u in data_alert["numeros_telefonicos"] if u["numero"] != number]
@@ -921,7 +950,7 @@ class WebSocketMessageHandler:
         self._send_create_alarma(number=number, usuario=usuario, empresa_id=empresa_id)
         return True
 
-    def _send_options_user(self, number: str, user: str, can_manage_alarm: bool) -> bool:
+    def _send_options_user(self, number: str, user: str, can_manage_alarm: bool, is_alert_manager: bool = False) -> bool:
         if not self.whatsapp_service:
             self.logger.warning("⚠️ WhatsApp service no disponible")
             return False
@@ -947,6 +976,13 @@ class WebSocketMessageHandler:
                 }
             ])
 
+            if is_alert_manager:
+                rows.append({
+                    "id": "CAMBIAR_ALERTA",
+                    "title": "Cambiar alerta",
+                    "description": "Ver y cambiar a una alerta activa de otra sede"
+                })
+
             sections = [
                 {
                     "title": "Servicios técnicos",
@@ -968,6 +1004,79 @@ class WebSocketMessageHandler:
         except Exception  as ex:
             self.logger.error(f"Error en _send_options_user {ex}")
             return False
+
+    def _send_manager_alert_picker(self, number: str, user: str, usuario_id: str) -> None:
+        """Enviar lista de alertas activas (una por sede) para que el manager elija una"""
+        if not self.whatsapp_service or not self.backend_client:
+            return
+        try:
+            payload = self.backend_client.manager_list_active_alerts(telefono=number, usuario_id=usuario_id)
+            alerts = (payload or {}).get("alerts", []) if isinstance(payload, dict) else []
+            if not alerts:
+                self.whatsapp_service.send_individual_message(
+                    phone=number,
+                    message="No hay alertas activas en ninguna sede de tu empresa."
+                )
+                return
+
+            rows = []
+            for a in alerts[:10]:
+                alert_id = a.get("alert_id")
+                if not alert_id:
+                    continue
+                sede = a.get("sede") or "Sin sede"
+                titulo = (a.get("nombre_alerta") or a.get("tipo_alerta") or "Alerta")[:24]
+                fecha = a.get("fecha_creacion") or ""
+                rows.append({
+                    "id": f"SWITCH_ALERT_{alert_id}",
+                    "title": f"{sede}: {titulo}"[:24],
+                    "description": (a.get("descripcion") or fecha)[:72]
+                })
+
+            if not rows:
+                self.whatsapp_service.send_individual_message(
+                    phone=number,
+                    message="No hay alertas activas disponibles para cambiar."
+                )
+                return
+
+            sections = [{"title": "Alertas activas por sede", "rows": rows}]
+            friendly_user = self._get_first_name(user) or "Manager"
+            self.whatsapp_service.send_list_message(
+                phone=number,
+                header_text=f"{friendly_user}\nElige la alerta a la que quieres cambiar",
+                body_text="Cada opción es la última alerta activa de una sede.",
+                footer_text="RESCUE SYSTEM",
+                button_text="Ver alertas",
+                sections=sections
+            )
+        except Exception as ex:
+            self.logger.error(f"Error en _send_manager_alert_picker: {ex}")
+
+    def _handle_manager_switch(self, number: str, user: str, target_alert_id: str, is_creator: bool, is_alert_manager: bool) -> None:
+        """Procesar cambio de foco a la alerta elegida por el manager"""
+        if not self.whatsapp_service or not self.backend_client:
+            return
+        try:
+            result = self.backend_client.manager_switch_focus(telefono=number, alert_id=target_alert_id)
+            if isinstance(result, dict) and result.get("success"):
+                alert_info = result.get("alert", {})
+                sede = alert_info.get("sede") or "Sin sede"
+                nombre = alert_info.get("nombre_alerta") or alert_info.get("tipo_alerta") or "Alerta"
+                self.whatsapp_service.send_individual_message(
+                    phone=number,
+                    message=f"✅ Foco cambiado a la alerta '{nombre}' (sede {sede})."
+                )
+                self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=is_alert_manager)
+            else:
+                err = (result or {}).get("error") if isinstance(result, dict) else "Error desconocido"
+                self.whatsapp_service.send_individual_message(
+                    phone=number,
+                    message=f"❌ No se pudo cambiar la alerta: {err}"
+                )
+        except Exception as ex:
+            self.logger.error(f"Error en _handle_manager_switch: {ex}")
+
     def _resolve_empresa_id(self, phone: str, current_empresa_id: Optional[str] = None) -> Optional[str]:
         """Obtener empresa_id a partir del número de teléfono"""
         if current_empresa_id:
@@ -1583,7 +1692,7 @@ class WebSocketMessageHandler:
                 "action": "deactivate"
             }
 
-    def trigger_fanout(self, alert_data: Dict) -> bool:
+    def trigger_fanout(self, alert_data: Dict, alert_managers: List[Dict] = None) -> bool:
         """Disparar fanout MQTT con datos de alerta - llamado via HTTP desde RescueBack"""
         try:
             if not self.empresa_handler:
@@ -1593,7 +1702,8 @@ class WebSocketMessageHandler:
             empresa_message = {
                 "type": "alert_created_by_empresa",
                 "timestamp": alert_data.get("fecha_creacion", ""),
-                "alert": alert_data
+                "alert": alert_data,
+                "alert_managers": alert_managers or []
             }
 
             success = self.empresa_handler.process_empresa_activation(empresa_message)

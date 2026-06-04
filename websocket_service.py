@@ -66,12 +66,20 @@ class WebSocketService:
     async def _handle_fanout(self, request: web.Request) -> web.Response:
         """Endpoint HTTP interno: POST /internal/fanout-alert"""
         try:
-            alert_data = await request.json()
-            if not isinstance(alert_data, dict):
-                return web.json_response({"success": False, "error": "alert_data must be a JSON object"}, status=400)
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                return web.json_response({"success": False, "error": "payload must be a JSON object"}, status=400)
+
+            # Compatibilidad: payload puede venir como {alert, alert_managers} o como alert plano (legado)
+            if "alert" in payload and isinstance(payload.get("alert"), dict):
+                alert_data = payload["alert"]
+                alert_managers = payload.get("alert_managers") or []
+            else:
+                alert_data = payload
+                alert_managers = []
 
             handler = self.websocket_server.message_handler
-            success = handler.trigger_fanout(alert_data)
+            success = handler.trigger_fanout(alert_data, alert_managers=alert_managers)
             return web.json_response({"success": success}, status=200 if success else 500)
         except Exception as e:
             self.logger.error(f"❌ Error en /internal/fanout-alert: {e}")
