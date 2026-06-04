@@ -451,6 +451,21 @@ class WhatsAppService:
             self.logger.error(f"❌ Error en envío de ubicación con CTA: {e}")
             return False
     
+    def find_numbers_by_alert(self, alert_id: str, manager_only: bool = False) -> List[Dict]:
+        """Devuelve los números con foco en una alerta dada (consulta WhatsApp HTTP API)"""
+        try:
+            if not self.config.enabled:
+                return []
+            endpoint = f"/api/numbers/by-alert/{alert_id}"
+            params = {"manager_only": "true"} if manager_only else None
+            response = self.client._make_request("GET", endpoint, params=params)
+            if isinstance(response, dict) and response.get("success"):
+                return response.get("numbers", []) or []
+            return []
+        except Exception as e:
+            self.logger.error(f"Error en find_numbers_by_alert: {e}")
+            return []
+
     def add_number_to_cache(self, phone: str, name: str = None, data: Dict = None, empresa_id: str = None) -> bool:
         """
         Agregar número al cache de WhatsApp

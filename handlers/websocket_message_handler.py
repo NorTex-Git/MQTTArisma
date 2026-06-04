@@ -529,6 +529,14 @@ class WebSocketMessageHandler:
                     user_id=exist_alert.get("id"),
                     user_name=user
                 )
+                # Forward en tiempo real a managers con foco en esta alerta
+                self._forward_to_subscribed_managers(
+                    alert_id=current_alert_id,
+                    sender_phone=number,
+                    sender_name=user,
+                    entry=entry,
+                    msg_type=type_message
+                )
         except Exception as exc:
             self.logger.debug(f"Log IN omitido: {exc}")
         if "alert_active" in exist_alert:
@@ -1150,6 +1158,57 @@ class WebSocketMessageHandler:
             self.whatsapp_service.send_individual_message(phone=number, message=text)
         except Exception as ex:
             self.logger.error(f"Error enviando resumen de conversación: {ex}")
+
+    def _forward_to_subscribed_managers(self, alert_id: str, sender_phone: str,
+                                        sender_name: str, entry: Dict, msg_type: str) -> None:
+        """Reenvía mensaje IN del usuario a managers con foco en esta alerta (tiempo real)"""
+        if not self.whatsapp_service or not alert_id:
+            return
+        try:
+            # Extraer texto del mensaje
+            body_text = ""
+            if isinstance(entry, dict):
+                inner = entry.get(msg_type)
+                if isinstance(inner, dict):
+                    if msg_type == "text":
+                        body_text = inner.get("body", "")
+                    elif msg_type == "interactive":
+                        list_reply = inner.get("list_reply") or {}
+                        btn_reply = inner.get("button_reply") or {}
+                        body_text = list_reply.get("title") or btn_reply.get("title") or ""
+                    else:
+                        body_text = inner.get("caption") or inner.get("body") or f"[{msg_type}]"
+            if not body_text:
+                body_text = f"[{msg_type}]"
+
+            subscribers = self.whatsapp_service.find_numbers_by_alert(alert_id=alert_id, manager_only=True)
+            if not subscribers:
+                return
+
+            friendly_sender = self._get_first_name(sender_name) or sender_phone
+            forward_text = f"{friendly_sender}: {body_text}"
+
+            import threading
+
+            def _fire():
+                try:
+                    for sub in subscribers:
+                        manager_phone = sub.get("phone")
+                        if not manager_phone or manager_phone == sender_phone:
+                            continue
+                        try:
+                            self.whatsapp_service.send_individual_message(
+                                phone=manager_phone,
+                                message=forward_text
+                            )
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            threading.Thread(target=_fire, daemon=True).start()
+        except Exception as exc:
+            self.logger.debug(f"_forward_to_subscribed_managers ignorado: {exc}")
 
     def _log_message_to_alert(self, alert_id: str, phone: str, direction: str,
                               msg_type: str, entry: Optional[Dict] = None,
