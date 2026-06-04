@@ -896,12 +896,14 @@ class WebSocketMessageHandler:
         if isinstance(raw_role, dict):
             normalized_role = {
                 "nombre": raw_role.get("nombre") or raw_role.get("name", ""),
-                "is_creator": bool(raw_role.get("is_creator"))
+                "is_creator": bool(raw_role.get("is_creator")),
+                "is_alert_manager": bool(raw_role.get("is_alert_manager"))
             }
         else:
-            normalized_role = {"is_creator": False}
+            normalized_role = {"is_creator": False, "is_alert_manager": False}
 
         is_creator = normalized_role.get("is_creator", False)
+        is_alert_manager = normalized_role.get("is_alert_manager", False)
 
         # Agregar número al cache de WhatsApp
         if self.whatsapp_service:
@@ -963,6 +965,9 @@ class WebSocketMessageHandler:
         #         return True
         
         if not is_creator:
+            if is_alert_manager:
+                self._send_manager_alert_picker(number=number, user=usuario, usuario_id=verify_number.get("id", ""))
+                return True
             self._send_permission_denied_message(number, usuario, "crear alertas")
             return True
 
