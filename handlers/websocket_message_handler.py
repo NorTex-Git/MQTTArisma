@@ -589,6 +589,16 @@ class WebSocketMessageHandler:
                                     self._clean_bulk_cache_alert(list_user=list_users)
                                 except Exception as cache_error:
                                     self.logger.error(f"❌ Error limpiando cache: {cache_error}")
+
+                                # Limpiar cache + notificar a managers observando esta alerta
+                                try:
+                                    self._clean_managers_after_deactivation(
+                                        alert_id=id_alert,
+                                        sede=response_desactivate.get("sede", ""),
+                                        nombre_alerta=response_desactivate.get("nombre_alerta") or response_desactivate.get("tipo_alerta", "Alerta")
+                                    )
+                                except Exception as mgr_error:
+                                    self.logger.error(f"❌ Error limpiando managers: {mgr_error}")
                                 
                                 # Enviar mensajes a otros usuarios
                                 try:
@@ -859,6 +869,38 @@ class WebSocketMessageHandler:
             message_time=message,
             empresa_id=cached_info.get("data", {}).get("empresa_id")
         )
+    def _clean_managers_after_deactivation(self, alert_id: str, sede: str, nombre_alerta: str) -> None:
+        """Limpiar foco y notificar a los managers que estaban observando la alerta desactivada"""
+        if not self.whatsapp_service or not alert_id:
+            return
+        try:
+            managers = self.whatsapp_service.find_numbers_by_alert(alert_id=str(alert_id), manager_only=True)
+            if not managers:
+                return
+            patch_data = {
+                "info_alert": "__DELETE__",
+                "alert_active": "__DELETE__"
+            }
+            notify_text = f"La alerta '{nombre_alerta}' de sede {sede or 'desconocida'} fue desactivada. Ya no estás en su flujo."
+            for m in managers:
+                manager_phone = m.get("phone")
+                if not manager_phone:
+                    continue
+                try:
+                    self.whatsapp_service.update_number_cache(
+                        phone=manager_phone,
+                        data=patch_data,
+                        empresa_id=(m.get("data") or {}).get("empresa_id")
+                    )
+                except Exception as ex:
+                    self.logger.error(f"❌ Error limpiando cache manager {manager_phone}: {ex}")
+                try:
+                    self.whatsapp_service.send_individual_message(phone=manager_phone, message=notify_text)
+                except Exception as ex:
+                    self.logger.error(f"❌ Error notificando manager {manager_phone}: {ex}")
+        except Exception as ex:
+            self.logger.error(f"Error en _clean_managers_after_deactivation: {ex}")
+
     def _clean_bulk_cache_alert(self,list_user:list[Dict]) -> None:
         try:
             data = {
