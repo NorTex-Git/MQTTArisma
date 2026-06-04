@@ -674,14 +674,9 @@ class WebSocketMessageHandler:
                             return
                         self._send_create_down_alarma(alert=data_alert,data_user=cached_info,list_users=data_user)
                     elif opcion == "UBICACION":
-                        if not data_user:
-                            self.whatsapp_service.send_individual_message(
-                                phone=number,
-                                message="No perteneces a la sede de esta alerta."
-                            )
-                            self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=is_alert_manager, is_in_alert=False)
-                            return
-                        self._send_location_personalized_message(numeros_data=data_user,tipo_alarma_info=data_alert)
+                        # Manager observando alerta ajena: enviar ubicación a su propio número
+                        recipients_loc = data_user if data_user else [{"numero": number, "nombre": user}]
+                        self._send_location_personalized_message(numeros_data=recipients_loc,tipo_alarma_info=data_alert)
                     elif opcion == "EMBARCADO":
                         if not data_user:
                             self.whatsapp_service.send_individual_message(
@@ -1033,27 +1028,27 @@ class WebSocketMessageHandler:
             return False
         try:
             rows = []
-            # Acciones sobre la alerta solo si el usuario pertenece a su sede
-            if is_in_alert:
-                if can_manage_alarm:
-                    rows.append({
-                        "id": "APAGAR",
-                        "title": "Apagar Alarma",
-                        "description": "Al seleccionar esta opción, la alarma en cuestión se apagará."
-                    })
+            # APAGAR y EMBARCADO solo si el usuario pertenece a la sede de la alerta
+            if is_in_alert and can_manage_alarm:
+                rows.append({
+                    "id": "APAGAR",
+                    "title": "Apagar Alarma",
+                    "description": "Al seleccionar esta opción, la alarma en cuestión se apagará."
+                })
 
-                rows.extend([
-                    {
-                        "id": "UBICACION",
-                        "title": "Ubicación de la alarma",
-                        "description": "Obtener la ubicación de la alarma"
-                    },
-                    {
-                        "id": "EMBARCADO",
-                        "title": "Embarcarme",
-                        "description": "Indica que ya estás en camino a la emergencia"
-                    }
-                ])
+            # UBICACION disponible para usuarios de la sede y para managers observando
+            rows.append({
+                "id": "UBICACION",
+                "title": "Ubicación de la alarma",
+                "description": "Obtener la ubicación de la alarma"
+            })
+
+            if is_in_alert:
+                rows.append({
+                    "id": "EMBARCADO",
+                    "title": "Embarcarme",
+                    "description": "Indica que ya estás en camino a la emergencia"
+                })
 
             if is_alert_manager:
                 rows.append({
@@ -1148,8 +1143,6 @@ class WebSocketMessageHandler:
                 )
                 # Enviar resumen de últimos mensajes de usuarios (direction=in)
                 self._send_alert_conversation_summary(number=number, alert_id=target_alert_id, limit=15)
-                # Manager observa alerta ajena: ocultar acciones APAGAR/UBICACION/EMBARCADO
-                self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=is_alert_manager, is_in_alert=False)
             else:
                 err = (result or {}).get("error") if isinstance(result, dict) else "Error desconocido"
                 self.whatsapp_service.send_individual_message(
