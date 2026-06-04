@@ -1250,6 +1250,16 @@ class WebSocketMessageHandler:
                         else:
                             extracted_body = inner.get("caption") or inner.get("body") or ""
 
+            # Detectar mensajes de navegación (replies a menús/botones, no input orgánico)
+            is_navigation = False
+            if direction == "in" and entry and isinstance(entry, dict):
+                inner = entry.get(msg_type) if msg_type else None
+                if msg_type == "interactive" and isinstance(inner, dict):
+                    if inner.get("list_reply") or inner.get("button_reply"):
+                        is_navigation = True
+                elif msg_type == "button" and isinstance(inner, dict):
+                    is_navigation = True
+
             data = {
                 "phone": phone,
                 "direction": direction,
@@ -1258,7 +1268,8 @@ class WebSocketMessageHandler:
                 "payload": payload_raw,
                 "user_id": user_id,
                 "user_name": user_name,
-                "is_template": bool(is_template)
+                "is_template": bool(is_template),
+                "is_navigation": is_navigation
             }
 
             def _fire():
