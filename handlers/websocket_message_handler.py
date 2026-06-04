@@ -647,8 +647,8 @@ class WebSocketMessageHandler:
                         self.logger.info(
                             "📍 Reenviando disponibilidad y mapa por boton sin payload"
                         )
-                        data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{})
-                        data_user = [u for u in data_alert["numeros_telefonicos"] if u["numero"] == number]
+                        data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
+                        data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") == number]
                         self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
                         self._send_location_personalized_message(
                             numeros_data=data_user,
@@ -657,8 +657,9 @@ class WebSocketMessageHandler:
                 elif is_list:
                     #Esto es para si es una lista despues de que ya se activo
                     opcion = is_list["id"]
-                    data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{})
-                    data_user = [u for u in data_alert["numeros_telefonicos"] if u["numero"] == number]
+                    data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
+                    numeros_list = data_alert.get("numeros_telefonicos") or []
+                    data_user = [u for u in numeros_list if u.get("numero") == number]
                     if opcion == "APAGAR":
                         if not is_creator:
                             self._send_permission_denied_message(number, user, "apagar la alarma")
@@ -668,7 +669,7 @@ class WebSocketMessageHandler:
                     elif opcion == "UBICACION":
                         self._send_location_personalized_message(numeros_data=data_user,tipo_alarma_info=data_alert)
                     elif opcion == "EMBARCADO":
-                        data_user_not_you = [u for u in data_alert["numeros_telefonicos"] if u["numero"] != number]
+                        data_user_not_you = [u for u in numeros_list if u.get("numero") != number]
                         self.backend_client.update_user_status(alert_id=exist_alert["info_alert"]["alert_id"],
                                                                 usuario_id = exist_alert["id"],
                                                                 embarcado = True)
@@ -693,10 +694,10 @@ class WebSocketMessageHandler:
 
 
                 elif isinstance(exist_alert.get("disponible"), bool) and not exist_alert["disponible"]:
-                    #quiere decir que mando un mensaje cuando aun no puede hablar 
-                    data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{})
+                    #quiere decir que mando un mensaje cuando aun no puede hablar
+                    data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
                     #print(json.dumps(data_alert,indent=4))
-                    data_user = [u for u in data_alert["numeros_telefonicos"] if u["numero"] == number]
+                    data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") == number]
                     self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
                     self._send_location_personalized_message(
                         numeros_data=data_user,
@@ -735,8 +736,8 @@ class WebSocketMessageHandler:
                         if body_text.upper() in comandos_opciones:
                             self._send_options_user(number=number,user=user,can_manage_alarm=is_creator,is_alert_manager=is_alert_manager)
                         else:
-                            data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{})
-                            data_user = [u for u in data_alert["numeros_telefonicos"] if u["numero"] != number]
+                            data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
+                            data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") != number]
                             if data_user:
                                 self._send_bulk_team(name_made=user,message=body_text,list_users=data_user,type_message=type_message)
                             else:
