@@ -812,6 +812,26 @@ class WebSocketMessageHandler:
         else:
             if is_list:
                 opcion_id = is_list.get("id", "")
+                # Selector de modo para usuarios con ambos roles
+                if opcion_id == "MODE_CREATE_ALERT":
+                    if not is_creator:
+                        self._send_permission_denied_message(number, user, "crear alertas")
+                        return
+                    self._send_create_alarma(
+                        number=number,
+                        usuario=user,
+                        is_in_cached=True,
+                        message_time=message,
+                        empresa_id=cached_info.get("data", {}).get("empresa_id")
+                    )
+                    return
+                if opcion_id == "MODE_MANAGER":
+                    if not is_alert_manager:
+                        self._send_permission_denied_message(number, user, "usar modo manager")
+                        return
+                    id_user_manager = exist_alert.get("id", "")
+                    self._send_manager_alert_picker(number=number, user=user, usuario_id=id_user_manager)
+                    return
                 # Manager: opciones de cambiar foco no requieren is_creator
                 if opcion_id == "CAMBIAR_ALERTA":
                     if not is_alert_manager:
@@ -854,6 +874,10 @@ class WebSocketMessageHandler:
         
         
 
+        # Usuario con ambos roles: pedir que elija modo primero
+        if is_creator and is_alert_manager:
+            self._send_role_mode_picker(number=number, user=user)
+            return
         # Manager sin permisos de creator: ofrecer menú con opción "Cambiar alerta"
         if not is_creator:
             if is_alert_manager:
@@ -1053,6 +1077,10 @@ class WebSocketMessageHandler:
                 
         #         return True
         
+        # Usuario con ambos roles: pedir que elija modo primero
+        if is_creator and is_alert_manager:
+            self._send_role_mode_picker(number=number, user=usuario)
+            return True
         if not is_creator:
             if is_alert_manager:
                 self._send_manager_alert_picker(number=number, user=usuario, usuario_id=verify_number.get("id", ""))
@@ -1120,6 +1148,36 @@ class WebSocketMessageHandler:
         except Exception  as ex:
             self.logger.error(f"Error en _send_options_user {ex}")
             return False
+
+    def _send_role_mode_picker(self, number: str, user: str) -> None:
+        """Envía selector de modo a usuarios con ambos roles (creator + alert_manager)"""
+        if not self.whatsapp_service:
+            return
+        try:
+            rows = [
+                {
+                    "id": "MODE_CREATE_ALERT",
+                    "title": "Crear alerta",
+                    "description": "Generar una nueva alerta en tu sede"
+                },
+                {
+                    "id": "MODE_MANAGER",
+                    "title": "Modo manager",
+                    "description": "Ver y cambiar a una alerta activa de otra sede"
+                }
+            ]
+            sections = [{"title": "Modos disponibles", "rows": rows}]
+            friendly_user = self._get_first_name(user) or "Usuario"
+            self.whatsapp_service.send_list_message(
+                phone=number,
+                header_text=f"{friendly_user}\nTienes dos roles disponibles",
+                body_text="Elige cómo quieres continuar",
+                footer_text="RESCUE SYSTEM",
+                button_text="Ver opciones",
+                sections=sections
+            )
+        except Exception as ex:
+            self.logger.error(f"Error en _send_role_mode_picker: {ex}")
 
     def _send_manager_alert_picker(self, number: str, user: str, usuario_id: str) -> None:
         """Enviar lista de alertas activas (una por sede) para que el manager elija una"""
