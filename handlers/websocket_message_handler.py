@@ -65,7 +65,8 @@ class WebSocketMessageHandler:
             self.empresa_handler = EmpresaAlertHandler(
                 whatsapp_service=whatsapp_service,
                 config=config,
-                enable_mqtt_publisher=enable_mqtt_publisher
+                enable_mqtt_publisher=enable_mqtt_publisher,
+                backend_client=self.backend_client
             )
         
         # Sistema de colas Redis para mensajes de WhatsApp ENTRANTES
@@ -1105,7 +1106,7 @@ class WebSocketMessageHandler:
                 nombre = alert_info.get("nombre_alerta") or alert_info.get("tipo_alerta") or "Alerta"
                 self.whatsapp_service.send_individual_message(
                     phone=number,
-                    message=f"✅ Foco cambiado a la alerta '{nombre}' (sede {sede})."
+                    message=f"Foco cambiado a la alerta '{nombre}' (sede {sede})."
                 )
                 # Enviar resumen de últimos mensajes de usuarios (direction=in)
                 self._send_alert_conversation_summary(number=number, alert_id=target_alert_id, limit=15)
@@ -1114,7 +1115,7 @@ class WebSocketMessageHandler:
                 err = (result or {}).get("error") if isinstance(result, dict) else "Error desconocido"
                 self.whatsapp_service.send_individual_message(
                     phone=number,
-                    message=f"❌ No se pudo cambiar la alerta: {err}"
+                    message=f"No se pudo cambiar la alerta: {err}"
                 )
         except Exception as ex:
             self.logger.error(f"Error en _handle_manager_switch: {ex}")
@@ -1129,10 +1130,10 @@ class WebSocketMessageHandler:
             if not messages:
                 self.whatsapp_service.send_individual_message(
                     phone=number,
-                    message="📜 Sin mensajes previos de usuarios en esta alerta."
+                    message="Sin mensajes previos de usuarios en esta alerta."
                 )
                 return
-            lines = ["📜 Últimos mensajes de usuarios:"]
+            lines = ["Últimos mensajes de usuarios:"]
             for m in messages:
                 fecha_raw = m.get("fecha") or ""
                 hora = fecha_raw[11:16] if len(fecha_raw) >= 16 else fecha_raw
@@ -1340,6 +1341,36 @@ class WebSocketMessageHandler:
                 recipients=template_recipients,
                 use_queue=True
             )
+            # Audit: registrar envíos de plantilla
+            try:
+                import threading
+                alert_id_for_log = alert_info.get("_id")
+                if alert_id_for_log and self.backend_client:
+                    alert_id_str = str(alert_id_for_log)
+                    recipients_copy = list(template_recipients)
+                    summary = f"Plantilla crear_alerta enviada (alerta {alert_name})"
+
+                    def _fire():
+                        try:
+                            for r in recipients_copy:
+                                phone = r.get("phone")
+                                if not phone:
+                                    continue
+                                payload = {
+                                    "phone": phone,
+                                    "direction": "out",
+                                    "type": "template",
+                                    "body": summary,
+                                    "payload": r,
+                                    "is_template": True
+                                }
+                                self.backend_client.log_alert_message(alert_id=alert_id_str, payload=payload)
+                        except Exception:
+                            pass
+
+                    threading.Thread(target=_fire, daemon=True).start()
+            except Exception as exc:
+                self.logger.debug(f"audit template ignorado: {exc}")
 
     def _map_backend_alert_type(self, alert_type: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """Convertir un tipo de alerta del backend al formato de WhatsApp list"""

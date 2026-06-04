@@ -514,10 +514,49 @@ class MQTTMessageHandler:
 
             if success:
                 self.logger.info(f"✅ Plantilla de alerta enviada a {len(template_recipients)} usuarios")
+                self._log_template_sends(
+                    alert_id=alert_info.get("_id"),
+                    recipients=template_recipients,
+                    summary_body=f"Plantilla crear_alerta enviada (alerta {alert_name})"
+                )
                 return True
 
             self.logger.error("❌ Error enviando plantilla de alerta")
             return False
+        except Exception as exc:
+            self.logger.error(f"❌ Error en _send_alert_created_template: {exc}")
+            return False
+
+    def _log_template_sends(self, alert_id, recipients: List[Dict], summary_body: str) -> None:
+        """Fire-and-forget: registra envíos de plantilla en backend (is_template=True)"""
+        if not self.backend_client or not alert_id:
+            return
+        try:
+            import threading
+
+            alert_id_str = str(alert_id) if alert_id else None
+
+            def _fire():
+                try:
+                    for r in recipients:
+                        phone = r.get("phone")
+                        if not phone:
+                            continue
+                        payload = {
+                            "phone": phone,
+                            "direction": "out",
+                            "type": "template",
+                            "body": summary_body,
+                            "payload": r,
+                            "is_template": True
+                        }
+                        self.backend_client.log_alert_message(alert_id=alert_id_str, payload=payload)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_fire, daemon=True).start()
+        except Exception as exc:
+            self.logger.debug(f"_log_template_sends ignorado: {exc}")
 
         except Exception as e:
             self.logger.error(f"❌ Error enviando plantilla de alerta: {e}")

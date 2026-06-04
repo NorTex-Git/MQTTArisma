@@ -17,11 +17,12 @@ from config.settings import MQTTConfig
 class EmpresaAlertHandler:
     """Handler específico para alertas desactivadas por empresa"""
     
-    def __init__(self, whatsapp_service=None, config=None, enable_mqtt_publisher=True):
+    def __init__(self, whatsapp_service=None, config=None, enable_mqtt_publisher=True, backend_client=None):
         self.whatsapp_service = whatsapp_service
         self.config = config
+        self.backend_client = backend_client
         self.logger = logging.getLogger(__name__)
-        
+
         # Estadísticas específicas
         self.processed_count = 0
         self.error_count = 0
@@ -710,6 +711,12 @@ class EmpresaAlertHandler:
 
             if success:
                 self.logger.info(f"✅ Plantilla de alerta enviada a {len(template_recipients)} usuarios")
+                self._log_template_sends(
+                    alert_id=alert_info.get("_id"),
+                    template_name="crear_alerta",
+                    recipients=template_recipients,
+                    summary_body=f"Plantilla crear_alerta enviada (alerta {alert_name})"
+                )
                 return True
 
             self.logger.error("❌ Error enviando plantilla de alerta")
@@ -977,8 +984,39 @@ class EmpresaAlertHandler:
             if self.mqtt_publisher:
                 self.mqtt_publisher.disconnect()
                 self.logger.info("🔌 MQTT Publisher desconectado en Empresa Handler")
-                
+
             self.logger.info("🛑 Empresa Alert Handler detenido")
-            
+
         except Exception as e:
             self.logger.error(f"❌ Error deteniendo Empresa Handler: {e}")
+
+    def _log_template_sends(self, alert_id, template_name: str, recipients: List[Dict], summary_body: str) -> None:
+        """Fire-and-forget: registra envíos de plantilla en backend (is_template=True)"""
+        if not self.backend_client or not alert_id:
+            return
+        try:
+            import threading
+
+            alert_id_str = str(alert_id) if alert_id else None
+
+            def _fire():
+                try:
+                    for r in recipients:
+                        phone = r.get("phone")
+                        if not phone:
+                            continue
+                        payload = {
+                            "phone": phone,
+                            "direction": "out",
+                            "type": "template",
+                            "body": summary_body,
+                            "payload": r,
+                            "is_template": True
+                        }
+                        self.backend_client.log_alert_message(alert_id=alert_id_str, payload=payload)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_fire, daemon=True).start()
+        except Exception as exc:
+            self.logger.debug(f"_log_template_sends ignorado: {exc}")
