@@ -754,6 +754,22 @@ class WebSocketMessageHandler:
                     )
         else:
             if is_list:
+                opcion_id = is_list.get("id", "")
+                # Manager: opciones de cambiar foco no requieren is_creator
+                if opcion_id == "CAMBIAR_ALERTA":
+                    if not is_alert_manager:
+                        self._send_permission_denied_message(number, user, "cambiar de alerta")
+                        return
+                    id_user_manager = exist_alert.get("id", "")
+                    self._send_manager_alert_picker(number=number, user=user, usuario_id=id_user_manager)
+                    return
+                if opcion_id.startswith("SWITCH_ALERT_"):
+                    if not is_alert_manager:
+                        self._send_permission_denied_message(number, user, "cambiar de alerta")
+                        return
+                    target_alert_id = opcion_id.replace("SWITCH_ALERT_", "", 1)
+                    self._handle_manager_switch(number=number, user=user, target_alert_id=target_alert_id, is_creator=is_creator, is_alert_manager=is_alert_manager)
+                    return
                 if not is_creator:
                     self._send_permission_denied_message(number, user, "activar una alarma")
                     return
@@ -781,8 +797,12 @@ class WebSocketMessageHandler:
         
         
 
-        # Enviar lista de alarmas solo si NO es una desactivación
+        # Manager sin permisos de creator: ofrecer menú con opción "Cambiar alerta"
         if not is_creator:
+            if is_alert_manager:
+                id_user_manager = exist_alert.get("id", "")
+                self._send_manager_alert_picker(number=number, user=user, usuario_id=id_user_manager)
+                return
             self._send_permission_denied_message(number, user, "activar una alarma")
             return
         self._send_create_alarma(
