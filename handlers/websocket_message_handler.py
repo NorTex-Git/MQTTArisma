@@ -667,8 +667,19 @@ class WebSocketMessageHandler:
                             return
                         self._send_create_down_alarma(alert=data_alert,data_user=cached_info,list_users=data_user)
                     elif opcion == "UBICACION":
-                        self._send_location_personalized_message(numeros_data=data_user,tipo_alarma_info=data_alert)
+                        # Manager: no está en numeros_telefonicos, sintetizar destinatario a su propio número
+                        recipients_loc = data_user
+                        if not recipients_loc and is_alert_manager:
+                            recipients_loc = [{"numero": number, "nombre": user}]
+                        self._send_location_personalized_message(numeros_data=recipients_loc,tipo_alarma_info=data_alert)
                     elif opcion == "EMBARCADO":
+                        if is_alert_manager and not data_user:
+                            self.whatsapp_service.send_individual_message(
+                                phone=number,
+                                message="Opción no disponible para manager: no perteneces a la sede de esta alerta."
+                            )
+                            self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=is_alert_manager)
+                            return
                         data_user_not_you = [u for u in numeros_list if u.get("numero") != number]
                         self.backend_client.update_user_status(alert_id=exist_alert["info_alert"]["alert_id"],
                                                                 usuario_id = exist_alert["id"],
