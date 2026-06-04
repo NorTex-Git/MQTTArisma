@@ -533,6 +533,27 @@ class BackendClient:
         except Exception:
             return None
 
+    def log_alert_message(self, alert_id: str, payload: Dict) -> Optional[Dict]:
+        """Registra un mensaje de la conversación de una alerta (in/out)"""
+        try:
+            response = self.post(f"/api/mqtt-alerts/{alert_id}/messages", data=payload)
+            return response if isinstance(response, dict) else None
+        except Exception:
+            return None
+
+    def get_alert_messages(self, alert_id: str, direction: Optional[str] = None, limit: int = 15) -> Optional[Dict]:
+        """Lista mensajes de la conversación de una alerta"""
+        try:
+            params = []
+            if direction:
+                params.append(f"direction={direction}")
+            params.append(f"limit={limit}")
+            qs = "&".join(params)
+            response = self.get(f"/api/mqtt-alerts/{alert_id}/messages?{qs}")
+            return response if isinstance(response, dict) else None
+        except Exception:
+            return None
+
     def _clear_token(self):
         """Limpiar el token de los headers después de usarlo"""
         if 'Authorization' in self.session.headers:

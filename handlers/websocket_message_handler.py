@@ -515,6 +515,21 @@ class WebSocketMessageHandler:
         exist_alert = cached_info["data"]
         is_creator = self._has_creator_permission(cached_info)
         is_alert_manager = self._has_alert_manager_permission(cached_info)
+        # Log IN: registrar mensaje entrante si hay alerta asociada al usuario
+        try:
+            current_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")
+            if current_alert_id:
+                self._log_message_to_alert(
+                    alert_id=current_alert_id,
+                    phone=number,
+                    direction="in",
+                    msg_type=type_message,
+                    entry=entry,
+                    user_id=exist_alert.get("id"),
+                    user_name=user
+                )
+        except Exception as exc:
+            self.logger.debug(f"Log IN omitido: {exc}")
         if "alert_active" in exist_alert:
             id_user = exist_alert["id"]
             alert_create = exist_alert["alert_active"]
@@ -1092,6 +1107,8 @@ class WebSocketMessageHandler:
                     phone=number,
                     message=f"✅ Foco cambiado a la alerta '{nombre}' (sede {sede})."
                 )
+                # Enviar resumen de últimos mensajes de usuarios (direction=in)
+                self._send_alert_conversation_summary(number=number, alert_id=target_alert_id, limit=15)
                 self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=is_alert_manager)
             else:
                 err = (result or {}).get("error") if isinstance(result, dict) else "Error desconocido"
@@ -1101,6 +1118,86 @@ class WebSocketMessageHandler:
                 )
         except Exception as ex:
             self.logger.error(f"Error en _handle_manager_switch: {ex}")
+
+    def _send_alert_conversation_summary(self, number: str, alert_id: str, limit: int = 15) -> None:
+        """Envía al manager un resumen con los últimos N mensajes de usuarios (IN) de la alerta"""
+        if not self.whatsapp_service or not self.backend_client:
+            return
+        try:
+            payload = self.backend_client.get_alert_messages(alert_id=alert_id, direction="in", limit=limit)
+            messages = (payload or {}).get("messages", []) if isinstance(payload, dict) else []
+            if not messages:
+                self.whatsapp_service.send_individual_message(
+                    phone=number,
+                    message="📜 Sin mensajes previos de usuarios en esta alerta."
+                )
+                return
+            lines = ["📜 Últimos mensajes de usuarios:"]
+            for m in messages:
+                fecha_raw = m.get("fecha") or ""
+                hora = fecha_raw[11:16] if len(fecha_raw) >= 16 else fecha_raw
+                nombre = (m.get("user_name") or m.get("phone") or "Usuario")[:24]
+                body = (m.get("body") or "").strip().replace("\n", " ")
+                if len(body) > 120:
+                    body = body[:117] + "..."
+                if not body:
+                    body = f"[{m.get('type', 'mensaje')}]"
+                lines.append(f"[{hora}] {nombre}: {body}")
+            text = "\n".join(lines)
+            if len(text) > 3500:
+                text = text[:3500] + "\n..."
+            self.whatsapp_service.send_individual_message(phone=number, message=text)
+        except Exception as ex:
+            self.logger.error(f"Error enviando resumen de conversación: {ex}")
+
+    def _log_message_to_alert(self, alert_id: str, phone: str, direction: str,
+                              msg_type: str, entry: Optional[Dict] = None,
+                              body: Optional[str] = None,
+                              user_id: Optional[str] = None, user_name: Optional[str] = None,
+                              is_template: bool = False) -> None:
+        """Fire-and-forget: registra mensaje en backend para auditoría/resumen"""
+        if not self.backend_client or not alert_id:
+            return
+        try:
+            import threading
+            extracted_body = body
+            payload_raw = {}
+            if entry and isinstance(entry, dict):
+                payload_raw = entry
+                inner = entry.get(msg_type)
+                if isinstance(inner, dict):
+                    if extracted_body is None:
+                        if msg_type == "text":
+                            extracted_body = inner.get("body", "")
+                        elif msg_type == "interactive":
+                            list_reply = inner.get("list_reply") or {}
+                            btn_reply = inner.get("button_reply") or {}
+                            extracted_body = list_reply.get("title") or btn_reply.get("title") or list_reply.get("id") or btn_reply.get("id") or ""
+                        elif msg_type == "button":
+                            extracted_body = inner.get("text") or inner.get("payload") or ""
+                        else:
+                            extracted_body = inner.get("caption") or inner.get("body") or ""
+
+            data = {
+                "phone": phone,
+                "direction": direction,
+                "type": msg_type or "text",
+                "body": extracted_body or "",
+                "payload": payload_raw,
+                "user_id": user_id,
+                "user_name": user_name,
+                "is_template": bool(is_template)
+            }
+
+            def _fire():
+                try:
+                    self.backend_client.log_alert_message(alert_id=alert_id, payload=data)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_fire, daemon=True).start()
+        except Exception as exc:
+            self.logger.debug(f"_log_message_to_alert ignorado: {exc}")
 
     def _resolve_empresa_id(self, phone: str, current_empresa_id: Optional[str] = None) -> Optional[str]:
         """Obtener empresa_id a partir del número de teléfono"""
