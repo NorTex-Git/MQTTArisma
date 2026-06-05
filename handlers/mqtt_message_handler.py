@@ -762,7 +762,8 @@ class MQTTMessageHandler:
                 if isinstance(role_info, dict):
                     cache_data["data"]["rol"] = {
                         "nombre": role_info.get("nombre") or role_info.get("name", ""),
-                        "is_creator": bool(role_info.get("is_creator"))
+                        "is_creator": bool(role_info.get("is_creator")),
+                        "is_alert_manager": bool(role_info.get("is_alert_manager"))
                     }
 
                 if empresa_id:
