@@ -659,9 +659,13 @@ class WebSocketMessageHandler:
                         )
                         data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
                         data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") == number]
-                        self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
+                        # Estoy disponible solo si el usuario pertenece a la sede de la alerta
+                        if data_user:
+                            self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
+                        # Ubicación se envía a su propio número si es manager observando
+                        loc_recipients = data_user if data_user else [{"numero": number, "nombre": user}]
                         self._send_location_personalized_message(
-                            numeros_data=data_user,
+                            numeros_data=loc_recipients,
                             tipo_alarma_info=data_alert
                         )
                 elif is_list:
@@ -724,16 +728,32 @@ class WebSocketMessageHandler:
                     data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
                     #print(json.dumps(data_alert,indent=4))
                     data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") == number]
-                    self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
+                    # Estoy disponible solo si el usuario pertenece a la sede de la alerta
+                    if data_user:
+                        self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
+                    loc_recipients = data_user if data_user else [{"numero": number, "nombre": user}]
                     self._send_location_personalized_message(
-                        numeros_data=data_user,
+                        numeros_data=loc_recipients,
                         tipo_alarma_info=data_alert
                     )
                 else:
                     """Aqui se deberia colocar el envio de mensaje a todos los usuarios, pero..
                     por ahora se procesa solo mensajes de texto"""
                     if type_message:
-                        body_text = entry[type_message]["body"]
+                        inner_payload = entry.get(type_message) or {}
+                        if isinstance(inner_payload, dict):
+                            body_text = (
+                                inner_payload.get("body")
+                                or inner_payload.get("text")
+                                or inner_payload.get("payload")
+                                or inner_payload.get("caption")
+                                or ""
+                            )
+                        else:
+                            body_text = ""
+                        if not body_text:
+                            self.logger.info(f"Mensaje sin body procesable (type={type_message}), ignorando")
+                            return
                         if len(body_text) > 1000:
                             self.whatsapp_service.send_individual_message(
                                 phone=number,
