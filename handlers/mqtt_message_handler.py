@@ -212,6 +212,11 @@ class MQTTMessageHandler:
                 list_users = alert_data.get("numeros_telefonicos", [])
                 usuarios_normalizados = self._normalize_usuarios_list(list_users)
 
+                # Managers de la empresa: notificar pero NO modificar su cache
+                alert_managers_raw = response.get("alert_managers", []) if isinstance(response, dict) else []
+                managers_normalizados = self._normalize_usuarios_list(alert_managers_raw)
+                manager_phone_set = {m.get("numero") for m in managers_normalizados if m.get("numero")}
+
                 if usuarios_normalizados:
                     activacion_alerta = alert_data.get("activacion_alerta", {})
                     creador_nombre = activacion_alerta.get("nombre") or mqtt_data.get("empresa", "la empresa")
@@ -219,7 +224,8 @@ class MQTTMessageHandler:
 
                     template_recipients = [
                         usuario for usuario in usuarios_normalizados
-                        if not telefono_creador or usuario.get("numero") != telefono_creador
+                        if (not telefono_creador or usuario.get("numero") != telefono_creador)
+                        and usuario.get("numero") not in manager_phone_set
                     ]
 
                     if template_recipients:
@@ -231,11 +237,32 @@ class MQTTMessageHandler:
                     else:
                         self.logger.info("ℹ️ Sin destinatarios para plantilla de alerta creada")
 
-                    cache_success = self._create_bulk_cache(
-                        alarm_info=alert_data,
-                        list_users=usuarios_normalizados,
-                        mqtt_data=mqtt_data
-                    )
+                    # Notificar a managers (no modifica su cache)
+                    if managers_normalizados:
+                        manager_recipients = [
+                            m for m in managers_normalizados
+                            if not telefono_creador or m.get("numero") != telefono_creador
+                        ]
+                        if manager_recipients:
+                            self._send_alert_created_template(
+                                recipients=manager_recipients,
+                                alert_info=alert_data,
+                                creator_name=creador_nombre
+                            )
+
+                    # Cache solo para usuarios de la sede (excluye managers para respetar su foco)
+                    cache_targets = [
+                        u for u in usuarios_normalizados
+                        if u.get("numero") not in manager_phone_set
+                    ]
+                    if cache_targets:
+                        cache_success = self._create_bulk_cache(
+                            alarm_info=alert_data,
+                            list_users=cache_targets,
+                            mqtt_data=mqtt_data
+                        )
+                    else:
+                        self.logger.info("ℹ️ Sin usuarios para cache (todos son managers)")
                 else:
                     self.logger.warning("⚠️ No hay usuarios válidos en la respuesta del backend")
             else:
