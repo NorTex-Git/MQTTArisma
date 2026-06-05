@@ -417,17 +417,10 @@ class WebSocketMessageHandler:
             # print(f"list_users: {json.dumps(list_users, indent=2)}")
             # print(f"hardware_location: {json.dumps(hardware_location, indent=2)}")
  
-            numero_excluido = cached_info["phone"]
-            if list_users:
-                creator_name = data_alert.get("activacion_alerta", {}).get("nombre")
-                recipients_template = [u for u in list_users if u.get("numero") != numero_excluido]
-                self._send_alert_created_template(
-                    recipients=recipients_template,
-                    alert_info=data_alert,
-                    creator_name=creator_name
-                )
-            else:
-                self.logger.error("⚠️ No hay destinatarios válidos para notificar")
+            # Template ya se envía via backend fanout (process_empresa_activation).
+            # No mandarlo aquí para evitar duplicado.
+            if not list_users:
+                self.logger.info("ℹ️ Sin destinatarios en respuesta de creación de alerta")
 
             # Fanout MQTT siempre, independiente de si hay usuarios con teléfono
             topics = data_alert.get("topics_otros_hardware") or response_alarm.get("topics_otros_hardware") or []
@@ -440,7 +433,7 @@ class WebSocketMessageHandler:
             # print(f"Enviando ubicación: {bool(list_users and data_alert.get('direccion_url'))}")
             #print(json.dumps(response_alarm,indent=4))
            
-            self._create_bulk_cache(list_users=list_users,alarm_info=data_alert,cache_creator=cached_info)
+            # Cache bulk ya lo hace el fanout backend (process_empresa_activation._create_bulk_cache_empresa)
             return True
         except Exception as ex:
             self.logger.error(f"Error en create_alarm {ex}")
