@@ -583,12 +583,13 @@ class WebSocketMessageHandler:
                                 except Exception as cache_error:
                                     self.logger.error(f"❌ Error limpiando cache: {cache_error}")
 
-                                # Limpiar cache + notificar a managers observando esta alerta
+                                # Notificar a TODOS los managers de la empresa + limpiar cache de los que tenían foco
                                 try:
                                     self._clean_managers_after_deactivation(
                                         alert_id=id_alert,
                                         sede=response_desactivate.get("sede", ""),
-                                        nombre_alerta=response_desactivate.get("nombre_alerta") or response_desactivate.get("tipo_alerta", "Alerta")
+                                        nombre_alerta=response_desactivate.get("nombre_alerta") or response_desactivate.get("tipo_alerta", "Alerta"),
+                                        all_managers=response_desactivate.get("alert_managers") or []
                                     )
                                 except Exception as mgr_error:
                                     self.logger.error(f"❌ Error limpiando managers: {mgr_error}")
@@ -928,20 +929,45 @@ class WebSocketMessageHandler:
             message_time=message,
             empresa_id=cached_info.get("data", {}).get("empresa_id")
         )
-    def _clean_managers_after_deactivation(self, alert_id: str, sede: str, nombre_alerta: str) -> None:
-        """Limpiar foco y notificar a los managers que estaban observando la alerta desactivada"""
+    def _clean_managers_after_deactivation(self, alert_id: str, sede: str, nombre_alerta: str,
+                                           all_managers: List[Dict] = None) -> None:
+        """Notificar a TODOS los managers de la empresa + limpiar foco de los que observaban esta alerta.
+
+        Args:
+            alert_id: ID de la alerta desactivada
+            sede: Sede de la alerta
+            nombre_alerta: Nombre legible para el mensaje
+            all_managers: Lista completa de managers de la empresa (vienen del backend)
+        """
         if not self.whatsapp_service or not alert_id:
             return
         try:
-            managers = self.whatsapp_service.find_numbers_by_alert(alert_id=str(alert_id), manager_only=True)
-            if not managers:
-                return
+            notify_text = f"La alerta '{nombre_alerta}' de sede {sede or 'desconocida'} fue desactivada."
+
+            # Notificar a TODOS los managers de la empresa
+            notified_phones = set()
+            if isinstance(all_managers, list):
+                for m in all_managers:
+                    raw_phone = m.get("numero") or m.get("telefono") or m.get("phone")
+                    if not raw_phone:
+                        continue
+                    manager_phone = str(raw_phone).lstrip("+")
+                    if not manager_phone or manager_phone in notified_phones:
+                        continue
+                    notified_phones.add(manager_phone)
+                    try:
+                        self.whatsapp_service.send_individual_message(phone=manager_phone, message=notify_text)
+                    except Exception as ex:
+                        self.logger.error(f"❌ Error notificando manager {manager_phone}: {ex}")
+
+            # Limpiar cache + notificar (si no fue notificado ya) a managers que tenían foco en esta alerta
+            focused_managers = self.whatsapp_service.find_numbers_by_alert(alert_id=str(alert_id), manager_only=True) or []
             patch_data = {
                 "info_alert": "__DELETE__",
                 "alert_active": "__DELETE__"
             }
-            notify_text = f"La alerta '{nombre_alerta}' de sede {sede or 'desconocida'} fue desactivada. Ya no estás en su flujo."
-            for m in managers:
+            extra_focus_text = f"Ya no estás en el flujo de la alerta '{nombre_alerta}'."
+            for m in focused_managers:
                 manager_phone = m.get("phone")
                 if not manager_phone:
                     continue
@@ -953,10 +979,17 @@ class WebSocketMessageHandler:
                     )
                 except Exception as ex:
                     self.logger.error(f"❌ Error limpiando cache manager {manager_phone}: {ex}")
-                try:
-                    self.whatsapp_service.send_individual_message(phone=manager_phone, message=notify_text)
-                except Exception as ex:
-                    self.logger.error(f"❌ Error notificando manager {manager_phone}: {ex}")
+                # Aviso adicional solo si no estaba en la lista global
+                if manager_phone not in notified_phones:
+                    try:
+                        self.whatsapp_service.send_individual_message(phone=manager_phone, message=notify_text)
+                    except Exception as ex:
+                        self.logger.error(f"❌ Error notificando manager {manager_phone}: {ex}")
+                else:
+                    try:
+                        self.whatsapp_service.send_individual_message(phone=manager_phone, message=extra_focus_text)
+                    except Exception as ex:
+                        self.logger.error(f"❌ Error avisando salida foco {manager_phone}: {ex}")
         except Exception as ex:
             self.logger.error(f"Error en _clean_managers_after_deactivation: {ex}")
 
