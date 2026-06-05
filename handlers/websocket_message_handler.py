@@ -830,6 +830,28 @@ class WebSocketMessageHandler:
                         empresa_id=cached_info.get("data", {}).get("empresa_id")
                     )
         else:
+            # Manager tap "Ver detalles" en template: enviar solo el mapa de la última alerta notificada
+            if is_alert_manager and type_message == "button":
+                button_payload = entry.get("button") or {}
+                btn_text = (button_payload.get("text") or "").strip().upper()
+                if btn_text == "VER DETALLES":
+                    last_notified = exist_alert.get("last_notified_alert") or {}
+                    last_alert_id = last_notified.get("alert_id")
+                    if last_alert_id:
+                        try:
+                            id_for_lookup = exist_alert.get("id", "")
+                            data_alert = self.backend_client.get_alert_by_id(alert_id=last_alert_id, user_id=id_for_lookup).get("alert", {}) or {}
+                            if data_alert:
+                                self._send_location_personalized_message(
+                                    numeros_data=[{"numero": number, "nombre": user}],
+                                    tipo_alarma_info=data_alert
+                                )
+                                return
+                        except Exception as ex:
+                            self.logger.error(f"Error procesando Ver detalles para manager: {ex}")
+                            return
+                    # Sin last_notified: silencio (no role picker)
+                    return
             if is_list:
                 opcion_id = is_list.get("id", "")
                 # Selector de modo para usuarios con ambos roles

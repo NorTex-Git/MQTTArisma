@@ -132,7 +132,7 @@ class EmpresaAlertHandler:
             else:
                 self.logger.info("ℹ️ No hay usuarios para notificar por WhatsApp")
 
-            # 1b. Notificar a managers (todos los de la empresa) - NO modifica su cache
+            # 1b. Notificar a managers (todos los de la empresa) - NO modifica su foco
             manager_notify_success = True
             if managers_normalizados:
                 manager_recipients = [
@@ -144,6 +144,12 @@ class EmpresaAlertHandler:
                         recipients=manager_recipients,
                         alert_info=alert_data,
                         creator_name=creador_nombre
+                    )
+                    # Registrar el alert_id como "last_notified_alert" en cache (PATCH no overwrite)
+                    self._patch_managers_last_notified(
+                        managers=manager_recipients,
+                        alert_id=str(alert_data.get("_id", "")),
+                        sede=sede
                     )
 
             # 2. Crear cache masivo para usuarios de la sede (excluye managers para respetar su foco)
@@ -989,6 +995,28 @@ class EmpresaAlertHandler:
 
         except Exception as e:
             self.logger.error(f"❌ Error deteniendo Empresa Handler: {e}")
+
+    def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
+        """PATCH cache de managers para guardar 'last_notified_alert' sin alterar su foco"""
+        if not self.whatsapp_service or not alert_id or not managers:
+            return
+        try:
+            patch_data = {
+                "last_notified_alert": {
+                    "alert_id": alert_id,
+                    "sede": sede or ""
+                }
+            }
+            for m in managers:
+                phone = m.get("numero")
+                if not phone:
+                    continue
+                try:
+                    self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
+                except Exception as ex:
+                    self.logger.error(f"❌ Error patch last_notified_alert manager {phone}: {ex}")
+        except Exception as ex:
+            self.logger.error(f"Error en _patch_managers_last_notified: {ex}")
 
     def _log_template_sends(self, alert_id, template_name: str, recipients: List[Dict], summary_body: str) -> None:
         """Fire-and-forget: registra envíos de plantilla en backend (is_template=True)"""
