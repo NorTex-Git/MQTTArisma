@@ -114,11 +114,21 @@ class EmpresaAlertHandler:
             creador_nombre = activacion_alerta.get("nombre") or empresa_nombre
             telefono_creador = self._extract_phone_number(activacion_alerta)
 
-            if usuarios_normalizados:
+            # Union sede + managers (managers reciben plantilla como cualquier usuario)
+            combined_by_phone: Dict[str, Dict] = {}
+            for u in usuarios_normalizados:
+                num = u.get("numero")
+                if num:
+                    combined_by_phone[num] = u
+            for m in managers_normalizados:
+                num = m.get("numero")
+                if num and num not in combined_by_phone:
+                    combined_by_phone[num] = m
+
+            if combined_by_phone:
                 template_recipients = [
-                    usuario for usuario in usuarios_normalizados
-                    if (not telefono_creador or usuario.get("numero") != telefono_creador)
-                    and usuario.get("numero") not in manager_phone_set
+                    usuario for num, usuario in combined_by_phone.items()
+                    if not telefono_creador or num != telefono_creador
                 ]
 
                 if template_recipients:
@@ -140,7 +150,7 @@ class EmpresaAlertHandler:
                 else:
                     self.logger.info("ℹ️ Creador no pertenece a la sede, sin notificación especial")
 
-            # 1c. Notificar a managers: plantilla + mapa (no modifica su foco/cache)
+            # 1c. Registrar last_notified para managers (cross-sede menu tracking)
             manager_notify_success = True
             if managers_normalizados:
                 manager_recipients = [
@@ -148,18 +158,6 @@ class EmpresaAlertHandler:
                     if not telefono_creador or m.get("numero") != telefono_creador
                 ]
                 if manager_recipients:
-                    manager_notify_success = self._send_alert_created_template(
-                        recipients=manager_recipients,
-                        alert_info=alert_data,
-                        creator_name=creador_nombre
-                    )
-                    ubicacion = alert_data.get("ubicacion", {})
-                    if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
-                        loc_list = [{"phone": m.get("numero"), "nombre": m.get("nombre", "")} for m in manager_recipients]
-                        self._send_location_message_empresa(
-                            usuarios=loc_list,
-                            location=ubicacion
-                        )
                     self._patch_managers_last_notified(
                         managers=manager_recipients,
                         alert_id=str(alert_data.get("_id", "")),
@@ -1057,24 +1055,51 @@ class EmpresaAlertHandler:
             return False
 
     def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
-        """PATCH cache de managers para guardar 'last_notified_alert' sin alterar su foco"""
+        """Upsert cache de managers para guardar 'last_notified_alert' sin alterar su foco.
+        Si el manager no tiene entry, lo crea con role info + last_notified_alert."""
         if not self.whatsapp_service or not alert_id or not managers:
             return
         try:
-            patch_data = {
-                "last_notified_alert": {
-                    "alert_id": alert_id,
-                    "sede": sede or ""
-                }
+            last_notified = {
+                "alert_id": alert_id,
+                "sede": sede or ""
             }
+            patch_data = {"last_notified_alert": last_notified}
+
             for m in managers:
                 phone = m.get("numero")
                 if not phone:
                     continue
                 try:
-                    self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
+                    patched = self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
+                    if patched:
+                        continue
+
+                    # No existe entry: crear con datos base del manager
+                    role_info = m.get("rol") if isinstance(m, dict) else None
+                    empresa_id = m.get("empresa_id") or ""
+                    cache_data = {
+                        "id": m.get("usuario_id", ""),
+                        "empresa": m.get("empresa", ""),
+                        "last_notified_alert": last_notified
+                    }
+                    if empresa_id:
+                        cache_data["empresa_id"] = empresa_id
+                    if isinstance(role_info, dict):
+                        cache_data["rol"] = {
+                            "nombre": role_info.get("nombre") or role_info.get("name", ""),
+                            "is_creator": bool(role_info.get("is_creator")),
+                            "is_alert_manager": bool(role_info.get("is_alert_manager"))
+                        }
+
+                    self.whatsapp_service.add_number_to_cache(
+                        phone=phone,
+                        name=m.get("nombre", ""),
+                        data=cache_data,
+                        empresa_id=empresa_id or None
+                    )
                 except Exception as ex:
-                    self.logger.error(f"❌ Error patch last_notified_alert manager {phone}: {ex}")
+                    self.logger.error(f"❌ Error upsert last_notified_alert manager {phone}: {ex}")
         except Exception as ex:
             self.logger.error(f"Error en _patch_managers_last_notified: {ex}")
 

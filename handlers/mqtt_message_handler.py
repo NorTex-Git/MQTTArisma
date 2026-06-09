@@ -217,15 +217,25 @@ class MQTTMessageHandler:
                 managers_normalizados = self._normalize_usuarios_list(alert_managers_raw)
                 manager_phone_set = {m.get("numero") for m in managers_normalizados if m.get("numero")}
 
-                if usuarios_normalizados:
-                    activacion_alerta = alert_data.get("activacion_alerta", {})
-                    creador_nombre = activacion_alerta.get("nombre") or mqtt_data.get("empresa", "la empresa")
-                    telefono_creador = self._extract_phone_number(activacion_alerta)
+                activacion_alerta = alert_data.get("activacion_alerta", {})
+                creador_nombre = activacion_alerta.get("nombre") or mqtt_data.get("empresa", "la empresa")
+                telefono_creador = self._extract_phone_number(activacion_alerta)
 
+                # Union sede + managers (managers reciben plantilla como cualquier usuario)
+                combined_by_phone: Dict[str, Dict] = {}
+                for u in usuarios_normalizados:
+                    num = u.get("numero")
+                    if num:
+                        combined_by_phone[num] = u
+                for m in managers_normalizados:
+                    num = m.get("numero")
+                    if num and num not in combined_by_phone:
+                        combined_by_phone[num] = m
+
+                if combined_by_phone:
                     template_recipients = [
-                        usuario for usuario in usuarios_normalizados
-                        if (not telefono_creador or usuario.get("numero") != telefono_creador)
-                        and usuario.get("numero") not in manager_phone_set
+                        usuario for num, usuario in combined_by_phone.items()
+                        if not telefono_creador or num != telefono_creador
                     ]
 
                     if template_recipients:
@@ -243,22 +253,18 @@ class MQTTMessageHandler:
                         if creator_data:
                             self._send_creator_notification(creator=creator_data, alert_data=alert_data)
 
-                    # Notificar a managers: plantilla + mapa (no modifica su cache/foco)
+                    # Registrar last_notified_alert para managers (upsert sin tocar foco)
                     if managers_normalizados:
                         manager_recipients = [
                             m for m in managers_normalizados
                             if not telefono_creador or m.get("numero") != telefono_creador
                         ]
                         if manager_recipients:
-                            self._send_alert_created_template(
-                                recipients=manager_recipients,
-                                alert_info=alert_data,
-                                creator_name=creador_nombre
+                            self._patch_managers_last_notified(
+                                managers=manager_recipients,
+                                alert_id=str(alert_data.get("_id", "")),
+                                sede=alert_data.get("sede", "")
                             )
-                            ubicacion = alert_data.get("ubicacion", {})
-                            if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
-                                loc_list = [{"phone": m.get("numero"), "nombre": m.get("nombre", "")} for m in manager_recipients]
-                                self._send_location_personalized_message(numeros_data=loc_list, hardware_location=ubicacion)
 
                     # Cache solo para usuarios de la sede (excluye managers para respetar su foco)
                     cache_targets = [
@@ -472,6 +478,54 @@ class MQTTMessageHandler:
         topic = build_tv_topic(empresa=empresa, sede=sede, pantalla=pantalla)
         self.send_mqtt_message(topic=topic, message_data=normalized)
   
+    def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
+        """Upsert cache de managers para guardar 'last_notified_alert' sin alterar su foco.
+        Si el manager no tiene entry, lo crea con role info + last_notified_alert."""
+        if not self.whatsapp_service or not alert_id or not managers:
+            return
+        try:
+            last_notified = {
+                "alert_id": alert_id,
+                "sede": sede or ""
+            }
+            patch_data = {"last_notified_alert": last_notified}
+
+            for m in managers:
+                phone = m.get("numero")
+                if not phone:
+                    continue
+                try:
+                    patched = self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
+                    if patched:
+                        continue
+
+                    role_info = m.get("rol") if isinstance(m, dict) else None
+                    empresa_id = m.get("empresa_id") or ""
+                    cache_data = {
+                        "id": m.get("usuario_id", ""),
+                        "empresa": m.get("empresa", ""),
+                        "last_notified_alert": last_notified
+                    }
+                    if empresa_id:
+                        cache_data["empresa_id"] = empresa_id
+                    if isinstance(role_info, dict):
+                        cache_data["rol"] = {
+                            "nombre": role_info.get("nombre") or role_info.get("name", ""),
+                            "is_creator": bool(role_info.get("is_creator")),
+                            "is_alert_manager": bool(role_info.get("is_alert_manager"))
+                        }
+
+                    self.whatsapp_service.add_number_to_cache(
+                        phone=phone,
+                        name=m.get("nombre", ""),
+                        data=cache_data,
+                        empresa_id=empresa_id or None
+                    )
+                except Exception as ex:
+                    self.logger.error(f"❌ Error upsert last_notified_alert manager {phone}: {ex}")
+        except Exception as ex:
+            self.logger.error(f"Error en _patch_managers_last_notified: {ex}")
+
     def _send_creator_notification(self, creator: Dict, alert_data: Dict) -> bool:
         """Enviar al creador: botón 'Estoy disponible' + mapa (sin plantilla crear_alerta)"""
         if not self.whatsapp_service:
