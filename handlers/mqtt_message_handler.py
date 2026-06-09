@@ -243,13 +243,18 @@ class MQTTMessageHandler:
                         if creator_data:
                             self._send_creator_notification(creator=creator_data, alert_data=alert_data)
 
-                    # Notificar a managers: solo mapa (sin plantilla)
+                    # Notificar a managers: plantilla + mapa (no modifica su cache/foco)
                     if managers_normalizados:
                         manager_recipients = [
                             m for m in managers_normalizados
                             if not telefono_creador or m.get("numero") != telefono_creador
                         ]
                         if manager_recipients:
+                            self._send_alert_created_template(
+                                recipients=manager_recipients,
+                                alert_info=alert_data,
+                                creator_name=creador_nombre
+                            )
                             ubicacion = alert_data.get("ubicacion", {})
                             if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
                                 loc_list = [{"phone": m.get("numero"), "nombre": m.get("nombre", "")} for m in manager_recipients]

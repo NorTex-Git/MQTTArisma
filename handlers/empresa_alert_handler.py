@@ -140,7 +140,7 @@ class EmpresaAlertHandler:
                 else:
                     self.logger.info("ℹ️ Creador no pertenece a la sede, sin notificación especial")
 
-            # 1c. Notificar a managers: solo mapa (sin plantilla, no modifica su foco)
+            # 1c. Notificar a managers: plantilla + mapa (no modifica su foco/cache)
             manager_notify_success = True
             if managers_normalizados:
                 manager_recipients = [
@@ -148,10 +148,15 @@ class EmpresaAlertHandler:
                     if not telefono_creador or m.get("numero") != telefono_creador
                 ]
                 if manager_recipients:
+                    manager_notify_success = self._send_alert_created_template(
+                        recipients=manager_recipients,
+                        alert_info=alert_data,
+                        creator_name=creador_nombre
+                    )
                     ubicacion = alert_data.get("ubicacion", {})
                     if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
                         loc_list = [{"phone": m.get("numero"), "nombre": m.get("nombre", "")} for m in manager_recipients]
-                        manager_notify_success = self._send_location_message_empresa(
+                        self._send_location_message_empresa(
                             usuarios=loc_list,
                             location=ubicacion
                         )
