@@ -532,6 +532,53 @@ class WebSocketMessageHandler:
                 )
         except Exception as exc:
             self.logger.debug(f"Log IN omitido: {exc}")
+
+        # Template button "Ver detalles" para managers: manejar antes de cualquier rama
+        # (independiente de si tienen alert_active/foco actual)
+        if is_alert_manager and type_message == "button":
+            button_payload = entry.get("button") or {}
+            btn_text = (button_payload.get("text") or "").strip().upper()
+            if btn_text == "VER DETALLES":
+                last_notified = exist_alert.get("last_notified_alert") or {}
+                last_alert_id = last_notified.get("alert_id")
+                if not last_alert_id:
+                    last_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")
+                if last_alert_id:
+                    try:
+                        id_for_lookup = exist_alert.get("id", "")
+                        resp = self.backend_client.get_alert_by_id(alert_id=last_alert_id, user_id=id_for_lookup) or {}
+                        data_alert = resp.get("alert", {}) or {}
+                        if data_alert:
+                            ubicacion = data_alert.get("ubicacion", {})
+                            if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
+                                self._send_location_personalized_message(
+                                    numeros_data=[{"numero": number, "nombre": user}],
+                                    tipo_alarma_info=data_alert
+                                )
+                            else:
+                                alert_name = data_alert.get("nombre_alerta") or data_alert.get("tipo_alerta", "Alerta")
+                                sede_name = data_alert.get("sede", "")
+                                msg = f"Alerta {alert_name}"
+                                if sede_name:
+                                    msg += f" en sede {sede_name}"
+                                msg += ".\nSin ubicación disponible."
+                                self.whatsapp_service.send_individual_message(phone=number, message=msg)
+                        else:
+                            self.logger.warning(f"Ver detalles: backend devolvió alert vacío para {last_alert_id} (resp={resp})")
+                            self.whatsapp_service.send_individual_message(
+                                phone=number,
+                                message="No se pudo obtener la alerta. Intenta de nuevo."
+                            )
+                    except Exception as ex:
+                        self.logger.error(f"Error procesando Ver detalles para manager: {ex}")
+                else:
+                    self.logger.info("Ver detalles: manager sin last_notified_alert ni foco actual")
+                    self.whatsapp_service.send_individual_message(
+                        phone=number,
+                        message="No hay alerta activa para mostrar."
+                    )
+                return
+
         if "alert_active" in exist_alert:
             id_user = exist_alert["id"]
             alert_create = exist_alert["alert_active"]
@@ -824,28 +871,6 @@ class WebSocketMessageHandler:
                         empresa_id=cached_info.get("data", {}).get("empresa_id")
                     )
         else:
-            # Manager tap "Ver detalles" en template: enviar solo el mapa de la última alerta notificada
-            if is_alert_manager and type_message == "button":
-                button_payload = entry.get("button") or {}
-                btn_text = (button_payload.get("text") or "").strip().upper()
-                if btn_text == "VER DETALLES":
-                    last_notified = exist_alert.get("last_notified_alert") or {}
-                    last_alert_id = last_notified.get("alert_id")
-                    if last_alert_id:
-                        try:
-                            id_for_lookup = exist_alert.get("id", "")
-                            data_alert = self.backend_client.get_alert_by_id(alert_id=last_alert_id, user_id=id_for_lookup).get("alert", {}) or {}
-                            if data_alert:
-                                self._send_location_personalized_message(
-                                    numeros_data=[{"numero": number, "nombre": user}],
-                                    tipo_alarma_info=data_alert
-                                )
-                                return
-                        except Exception as ex:
-                            self.logger.error(f"Error procesando Ver detalles para manager: {ex}")
-                            return
-                    # Sin last_notified: silencio (no role picker)
-                    return
             if is_list:
                 opcion_id = is_list.get("id", "")
                 # Selector de modo para usuarios con ambos roles
