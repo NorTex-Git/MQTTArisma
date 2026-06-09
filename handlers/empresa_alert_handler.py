@@ -132,7 +132,15 @@ class EmpresaAlertHandler:
             else:
                 self.logger.info("ℹ️ No hay usuarios para notificar por WhatsApp")
 
-            # 1b. Notificar a managers (todos los de la empresa) - NO modifica su foco
+            # 1b. Notificar al creador (si pertenece a la sede): botón disponible + mapa
+            if telefono_creador:
+                creator_data = next((u for u in usuarios_normalizados if u.get("numero") == telefono_creador), None)
+                if creator_data:
+                    self._send_creator_notification(creator=creator_data, alert_data=alert_data)
+                else:
+                    self.logger.info("ℹ️ Creador no pertenece a la sede, sin notificación especial")
+
+            # 1c. Notificar a managers: solo mapa (sin plantilla, no modifica su foco)
             manager_notify_success = True
             if managers_normalizados:
                 manager_recipients = [
@@ -140,12 +148,13 @@ class EmpresaAlertHandler:
                     if not telefono_creador or m.get("numero") != telefono_creador
                 ]
                 if manager_recipients:
-                    manager_notify_success = self._send_alert_created_template(
-                        recipients=manager_recipients,
-                        alert_info=alert_data,
-                        creator_name=creador_nombre
-                    )
-                    # Registrar el alert_id como "last_notified_alert" en cache (PATCH no overwrite)
+                    ubicacion = alert_data.get("ubicacion", {})
+                    if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
+                        loc_list = [{"phone": m.get("numero"), "nombre": m.get("nombre", "")} for m in manager_recipients]
+                        manager_notify_success = self._send_location_message_empresa(
+                            usuarios=loc_list,
+                            location=ubicacion
+                        )
                     self._patch_managers_last_notified(
                         managers=manager_recipients,
                         alert_id=str(alert_data.get("_id", "")),
@@ -996,6 +1005,51 @@ class EmpresaAlertHandler:
 
         except Exception as e:
             self.logger.error(f"❌ Error deteniendo Empresa Handler: {e}")
+
+    def _send_creator_notification(self, creator: Dict, alert_data: Dict) -> bool:
+        """Enviar al creador: botón 'Estoy disponible' + mapa (sin plantilla crear_alerta)"""
+        if not self.whatsapp_service:
+            return False
+        try:
+            phone = creator.get("numero", "")
+            nombre = creator.get("nombre", "") or ""
+            if not phone:
+                return False
+
+            alert_name = alert_data.get("nombre_alerta") or alert_data.get("tipo_alerta", "Alerta")
+            empresa_nombre = alert_data.get("empresa_nombre", "la empresa")
+            first_name = nombre.split()[0].upper() if nombre.strip() else "Usuario"
+            body_text = f"Hola {first_name}. Alerta de {alert_name} en {empresa_nombre} fue creada."
+            image_alert = alert_data.get("image_alert", "")
+
+            if image_alert:
+                header_type = "image"
+                header_content = image_alert
+            else:
+                header_type = "text"
+                header_content = f"ALERTA {alert_name.upper()}"
+
+            self.whatsapp_service.send_bulk_button_message(
+                header_type=header_type,
+                header_content=header_content,
+                buttons=[{"id": "Activar_User", "title": "Estoy disponible"}],
+                footer_text="Equipo RESCUE",
+                recipients=[{"phone": phone, "body_text": body_text}],
+                use_queue=True
+            )
+
+            ubicacion = alert_data.get("ubicacion", {})
+            if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
+                self._send_location_message_empresa(
+                    usuarios=[{"phone": phone, "nombre": nombre}],
+                    location=ubicacion
+                )
+
+            self.logger.info(f"✅ Notificación de creador enviada a {phone}")
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ Error en _send_creator_notification: {e}")
+            return False
 
     def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
         """PATCH cache de managers para guardar 'last_notified_alert' sin alterar su foco"""
