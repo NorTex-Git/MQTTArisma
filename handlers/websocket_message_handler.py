@@ -966,7 +966,9 @@ class WebSocketMessageHandler:
             focused_managers = self.whatsapp_service.find_numbers_by_alert(alert_id=str(alert_id), manager_only=True) or []
             patch_data = {
                 "info_alert": "__DELETE__",
-                "alert_active": "__DELETE__"
+                "alert_active": "__DELETE__",
+                "disponible": "__DELETE__",
+                "embarcado": "__DELETE__"
             }
             extra_focus_text = f"Ya no estás en el flujo de la alerta '{nombre_alerta}'."
             for m in focused_managers:

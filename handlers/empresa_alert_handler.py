@@ -272,7 +272,15 @@ class EmpresaAlertHandler:
 
             # 1. Limpiar caché de usuarios afectados (igual que WebSocket handler)
             cache_success = self._clean_users_cache_after_deactivation(usuarios)
-            
+
+            # 1b. Limpiar foco de managers que tenían esta alerta activa.
+            # Sin esto, managers siguen mandando mensajes a una alarma cerrada (info_alert quedaba colgado).
+            self._clean_focused_managers_after_deactivation(
+                alert_id=str(alert_id),
+                nombre_alerta=alert_name,
+                sede=sede
+            )
+
             # 2. Enviar notificación WhatsApp a usuarios
             whatsapp_success = self._send_empresa_deactivation_notification(
                 usuarios=usuarios,
@@ -1056,6 +1064,38 @@ class EmpresaAlertHandler:
         except Exception as e:
             self.logger.error(f"❌ Error en _send_creator_notification: {e}")
             return False
+
+    def _clean_focused_managers_after_deactivation(self, alert_id: str, nombre_alerta: str, sede: str) -> None:
+        """Limpia info_alert/alert_active del cache de managers que tenían foco en esta alerta.
+        Sin esto, sus mensajes posteriores quedaban asociados a la alerta cerrada."""
+        if not self.whatsapp_service or not alert_id:
+            return
+        try:
+            focused = self.whatsapp_service.find_numbers_by_alert(alert_id=str(alert_id), manager_only=True) or []
+            if not focused:
+                return
+            patch_data = {
+                "info_alert": "__DELETE__",
+                "alert_active": "__DELETE__",
+                "disponible": "__DELETE__",
+                "embarcado": "__DELETE__"
+            }
+            notify_text = f"La alerta '{nombre_alerta}' de sede {sede or 'desconocida'} fue desactivada. Ya no estás en su conversación."
+            for m in focused:
+                manager_phone = m.get("phone")
+                if not manager_phone:
+                    continue
+                try:
+                    self.whatsapp_service.update_number_cache(
+                        phone=manager_phone,
+                        data=patch_data,
+                        empresa_id=(m.get("data") or {}).get("empresa_id")
+                    )
+                    self.whatsapp_service.send_individual_message(phone=manager_phone, message=notify_text)
+                except Exception as ex:
+                    self.logger.error(f"❌ Error limpiando foco manager {manager_phone}: {ex}")
+        except Exception as ex:
+            self.logger.error(f"Error en _clean_focused_managers_after_deactivation: {ex}")
 
     def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
         """PATCH cache de managers para guardar 'last_notified_alert' sin alterar su foco.
