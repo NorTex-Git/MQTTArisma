@@ -1032,7 +1032,8 @@ class EmpresaAlertHandler:
         return ""
 
     def _send_creator_notification(self, creator: Dict, alert_data: Dict) -> bool:
-        """Enviar al creador: botón 'Estoy disponible' + mapa (sin plantilla crear_alerta)"""
+        """Enviar al creador solo el mapa. El creador ya queda disponible al crear la alerta,
+        por lo que no se envía botón 'Estoy disponible' ni plantilla crear_alerta."""
         if not self.whatsapp_service:
             return False
         try:
@@ -1041,87 +1042,42 @@ class EmpresaAlertHandler:
             if not phone:
                 return False
 
-            alert_name = alert_data.get("nombre_alerta") or alert_data.get("tipo_alerta", "Alerta")
-            empresa_nombre = alert_data.get("empresa_nombre", "la empresa")
-            first_name = nombre.split()[0].upper() if nombre.strip() else "Usuario"
-            body_text = f"Hola {first_name}. Alerta de {alert_name} en {empresa_nombre} fue creada."
-            image_alert = alert_data.get("image_alert", "")
-
-            if image_alert:
-                header_type = "image"
-                header_content = image_alert
-            else:
-                header_type = "text"
-                header_content = f"ALERTA {alert_name.upper()}"
-
-            self.whatsapp_service.send_bulk_button_message(
-                header_type=header_type,
-                header_content=header_content,
-                buttons=[{"id": "Activar_User", "title": "Estoy disponible"}],
-                footer_text="Equipo RESCUE",
-                recipients=[{"phone": phone, "body_text": body_text}],
-                use_queue=True
-            )
-
             ubicacion = alert_data.get("ubicacion", {})
-            if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
-                self._send_location_message_empresa(
-                    usuarios=[{"phone": phone, "nombre": nombre}],
-                    location=ubicacion
-                )
+            if not (isinstance(ubicacion, dict) and ubicacion.get("url_maps")):
+                self.logger.info(f"ℹ️ Creador {phone}: sin ubicación para enviar mapa")
+                return False
 
-            self.logger.info(f"✅ Notificación de creador enviada a {phone}")
+            self._send_location_message_empresa(
+                usuarios=[{"phone": phone, "nombre": nombre}],
+                location=ubicacion
+            )
+            self.logger.info(f"✅ Mapa enviado al creador {phone}")
             return True
         except Exception as e:
             self.logger.error(f"❌ Error en _send_creator_notification: {e}")
             return False
 
     def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
-        """Upsert cache de managers para guardar 'last_notified_alert' sin alterar su foco.
-        Si el manager no tiene entry, lo crea con role info + last_notified_alert."""
+        """PATCH cache de managers para guardar 'last_notified_alert' sin alterar su foco.
+        Solo actualiza si ya existe entry. NO crea cache automáticamente:
+        el manager solo entra a la conversación cuando él elige (CAMBIAR_ALERTA)."""
         if not self.whatsapp_service or not alert_id or not managers:
             return
         try:
-            last_notified = {
-                "alert_id": alert_id,
-                "sede": sede or ""
+            patch_data = {
+                "last_notified_alert": {
+                    "alert_id": alert_id,
+                    "sede": sede or ""
+                }
             }
-            patch_data = {"last_notified_alert": last_notified}
-
             for m in managers:
                 phone = m.get("numero")
                 if not phone:
                     continue
                 try:
-                    patched = self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
-                    if patched:
-                        continue
-
-                    # No existe entry: crear con datos base del manager
-                    role_info = m.get("rol") if isinstance(m, dict) else None
-                    empresa_id = m.get("empresa_id") or ""
-                    cache_data = {
-                        "id": m.get("usuario_id", ""),
-                        "empresa": m.get("empresa", ""),
-                        "last_notified_alert": last_notified
-                    }
-                    if empresa_id:
-                        cache_data["empresa_id"] = empresa_id
-                    if isinstance(role_info, dict):
-                        cache_data["rol"] = {
-                            "nombre": role_info.get("nombre") or role_info.get("name", ""),
-                            "is_creator": bool(role_info.get("is_creator")),
-                            "is_alert_manager": bool(role_info.get("is_alert_manager"))
-                        }
-
-                    self.whatsapp_service.add_number_to_cache(
-                        phone=phone,
-                        name=m.get("nombre", ""),
-                        data=cache_data,
-                        empresa_id=empresa_id or None
-                    )
+                    self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
                 except Exception as ex:
-                    self.logger.error(f"❌ Error upsert last_notified_alert manager {phone}: {ex}")
+                    self.logger.error(f"❌ Error PATCH last_notified_alert manager {phone}: {ex}")
         except Exception as ex:
             self.logger.error(f"Error en _patch_managers_last_notified: {ex}")
 
