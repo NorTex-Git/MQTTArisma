@@ -112,7 +112,10 @@ class EmpresaAlertHandler:
             template_success = True
             activacion_alerta = alert_data.get("activacion_alerta", {})
             creador_nombre = activacion_alerta.get("nombre") or empresa_nombre
-            telefono_creador = self._extract_phone_number(activacion_alerta)
+
+            # Resolver teléfono del creador. activacion_alerta solo tiene id+nombre,
+            # buscamos en numeros_telefonicos por usuario_id para encontrar su teléfono.
+            telefono_creador = self._resolve_creator_phone(activacion_alerta, usuarios_normalizados)
 
             # Union sede + managers (managers reciben plantilla como cualquier usuario)
             combined_by_phone: Dict[str, Dict] = {}
@@ -1008,6 +1011,25 @@ class EmpresaAlertHandler:
 
         except Exception as e:
             self.logger.error(f"❌ Error deteniendo Empresa Handler: {e}")
+
+    def _resolve_creator_phone(self, activacion_alerta: Dict, usuarios: List[Dict]) -> str:
+        """Resuelve el teléfono del creador buscando por usuario_id en la lista de sede.
+        activacion_alerta = {'id': usuario_id, 'nombre': ..., 'tipo_activacion': ...}.
+        Si tipo='hardware' o id ausente, devuelve ''."""
+        if not isinstance(activacion_alerta, dict):
+            return ""
+        tipo = (activacion_alerta.get("tipo_activacion") or "").lower()
+        if tipo == "hardware":
+            return ""
+        creator_id = activacion_alerta.get("id")
+        if not creator_id:
+            return ""
+        creator_id_str = str(creator_id)
+        for usuario in usuarios or []:
+            uid = usuario.get("usuario_id") or usuario.get("id")
+            if uid and str(uid) == creator_id_str:
+                return usuario.get("numero", "")
+        return ""
 
     def _send_creator_notification(self, creator: Dict, alert_data: Dict) -> bool:
         """Enviar al creador: botón 'Estoy disponible' + mapa (sin plantilla crear_alerta)"""

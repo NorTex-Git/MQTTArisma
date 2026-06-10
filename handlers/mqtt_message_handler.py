@@ -219,7 +219,7 @@ class MQTTMessageHandler:
 
                 activacion_alerta = alert_data.get("activacion_alerta", {})
                 creador_nombre = activacion_alerta.get("nombre") or mqtt_data.get("empresa", "la empresa")
-                telefono_creador = self._extract_phone_number(activacion_alerta)
+                telefono_creador = self._resolve_creator_phone(activacion_alerta, usuarios_normalizados)
 
                 # Union sede + managers (managers reciben plantilla como cualquier usuario)
                 combined_by_phone: Dict[str, Dict] = {}
@@ -478,6 +478,25 @@ class MQTTMessageHandler:
         topic = build_tv_topic(empresa=empresa, sede=sede, pantalla=pantalla)
         self.send_mqtt_message(topic=topic, message_data=normalized)
   
+    def _resolve_creator_phone(self, activacion_alerta: Dict, usuarios: List[Dict]) -> str:
+        """Resuelve el teléfono del creador buscando por usuario_id en la lista de sede.
+        activacion_alerta = {'id': usuario_id, 'nombre': ..., 'tipo_activacion': ...}.
+        Si tipo='hardware' o id ausente, devuelve ''."""
+        if not isinstance(activacion_alerta, dict):
+            return ""
+        tipo = (activacion_alerta.get("tipo_activacion") or "").lower()
+        if tipo == "hardware":
+            return ""
+        creator_id = activacion_alerta.get("id")
+        if not creator_id:
+            return ""
+        creator_id_str = str(creator_id)
+        for usuario in usuarios or []:
+            uid = usuario.get("usuario_id") or usuario.get("id")
+            if uid and str(uid) == creator_id_str:
+                return usuario.get("numero", "")
+        return ""
+
     def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
         """Upsert cache de managers para guardar 'last_notified_alert' sin alterar su foco.
         Si el manager no tiene entry, lo crea con role info + last_notified_alert."""
