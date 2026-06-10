@@ -512,6 +512,10 @@ class WebSocketMessageHandler:
         # Log IN: registrar mensaje entrante si hay alerta asociada al usuario
         try:
             current_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")
+            sender_role = ""
+            rol_data = exist_alert.get("rol") if isinstance(exist_alert, dict) else None
+            if isinstance(rol_data, dict):
+                sender_role = (rol_data.get("nombre") or rol_data.get("name") or "").strip()
             if current_alert_id:
                 self._log_message_to_alert(
                     alert_id=current_alert_id,
@@ -520,13 +524,15 @@ class WebSocketMessageHandler:
                     msg_type=type_message,
                     entry=entry,
                     user_id=exist_alert.get("id"),
-                    user_name=user
+                    user_name=user,
+                    user_role=sender_role
                 )
                 # Forward en tiempo real a managers con foco en esta alerta
                 self._forward_to_subscribed_managers(
                     alert_id=current_alert_id,
                     sender_phone=number,
                     sender_name=user,
+                    sender_role=sender_role,
                     entry=entry,
                     msg_type=type_message
                 )
@@ -1363,12 +1369,14 @@ class WebSocketMessageHandler:
                 fecha_raw = m.get("fecha") or ""
                 hora = fecha_raw[11:16] if len(fecha_raw) >= 16 else fecha_raw
                 nombre = (m.get("user_name") or m.get("phone") or "Usuario")[:24]
+                rol = (m.get("user_role") or "").strip()
                 body = (m.get("body") or "").strip().replace("\n", " ")
                 if len(body) > 120:
                     body = body[:117] + "..."
                 if not body:
                     body = f"[{m.get('type', 'mensaje')}]"
-                lines.append(f"[{hora}] {nombre}: {body}")
+                etiqueta = f"{nombre} ({rol})" if rol else nombre
+                lines.append(f"[{hora}] {etiqueta}: {body}")
             text = "\n".join(lines)
             if len(text) > 3500:
                 text = text[:3500] + "\n..."
@@ -1377,7 +1385,8 @@ class WebSocketMessageHandler:
             self.logger.error(f"Error enviando resumen de conversación: {ex}")
 
     def _forward_to_subscribed_managers(self, alert_id: str, sender_phone: str,
-                                        sender_name: str, entry: Dict, msg_type: str) -> None:
+                                        sender_name: str, entry: Dict, msg_type: str,
+                                        sender_role: str = "") -> None:
         """Reenvía mensaje IN del usuario a managers con foco en esta alerta (tiempo real)"""
         if not self.whatsapp_service or not alert_id:
             return
@@ -1403,7 +1412,10 @@ class WebSocketMessageHandler:
                 return
 
             friendly_sender = self._get_first_name(sender_name) or sender_phone
-            forward_text = f"{friendly_sender}: {body_text}"
+            if sender_role:
+                forward_text = f"{friendly_sender} ({sender_role}): {body_text}"
+            else:
+                forward_text = f"{friendly_sender}: {body_text}"
 
             import threading
 
@@ -1431,6 +1443,7 @@ class WebSocketMessageHandler:
                               msg_type: str, entry: Optional[Dict] = None,
                               body: Optional[str] = None,
                               user_id: Optional[str] = None, user_name: Optional[str] = None,
+                              user_role: str = "",
                               is_template: bool = False) -> None:
         """Fire-and-forget: registra mensaje en backend para auditoría/resumen"""
         if not self.backend_client or not alert_id:
@@ -1473,6 +1486,7 @@ class WebSocketMessageHandler:
                 "payload": payload_raw,
                 "user_id": user_id,
                 "user_name": user_name,
+                "user_role": user_role or "",
                 "is_template": bool(is_template),
                 "is_navigation": is_navigation
             }
