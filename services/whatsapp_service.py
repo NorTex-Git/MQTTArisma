@@ -253,8 +253,12 @@ class WhatsAppService:
             if not self.config.enabled:
                 self.logger.warning("⚠️ Servicio WhatsApp deshabilitado")
                 return False
-            
-            
+
+            # WhatsApp Cloud API: header text máximo 60 caracteres
+            if header_text and len(header_text) > 60:
+                self.logger.warning(f"⚠️ header_text excede 60 chars ({len(header_text)}), truncando")
+                header_text = header_text[:60]
+
             response = self.client.send_list_message(
                 phone=phone,
                 header_text=header_text,
@@ -300,8 +304,11 @@ class WhatsAppService:
             if not self.config.enabled:
                 self.logger.warning("⚠️ Servicio WhatsApp deshabilitado")
                 return False
-            
-            
+
+            if header_text and len(header_text) > 60:
+                self.logger.warning(f"⚠️ header_text bulk excede 60 chars ({len(header_text)}), truncando")
+                header_text = header_text[:60]
+
             response = self.client.send_bulk_list_message(
                 header_text=header_text,
                 footer_text=footer_text,
