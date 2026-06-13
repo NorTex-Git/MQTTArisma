@@ -523,7 +523,8 @@ class WebSocketMessageHandler:
                 number=number,
                 user=user,
                 alert_id=target_alert_id,
-                user_lookup_id=exist_alert.get("id", "")
+                user_lookup_id=exist_alert.get("id", ""),
+                cached_info=cached_info
             )
             return
 
@@ -1321,9 +1322,9 @@ class WebSocketMessageHandler:
         return False
 
     def _send_alert_details_to_user(self, number: str, user: str, alert_id: Optional[str],
-                                    user_lookup_id: str = "") -> None:
-        """Responde al tap 'Ver detalles' enviando mapa + datos resumidos de la alerta.
-        Maneja casos sin alert_id, alert no encontrada, o sin ubicación."""
+                                    user_lookup_id: str = "",
+                                    cached_info: Optional[Dict] = None) -> None:
+        """Responde al tap 'Ver detalles': mapa siempre + botón disponible si pertenece a la sede."""
         if not self.whatsapp_service:
             return
 
@@ -1354,21 +1355,36 @@ class WebSocketMessageHandler:
             )
             return
 
+        # Determinar membresía de sede
+        data_user = [u for u in (data_alert.get("numeros_telefonicos") or [])
+                     if u.get("numero") == number]
+        is_in_sede = bool(data_user)
+
+        # Mapa (siempre, si hay url_maps)
         ubicacion = data_alert.get("ubicacion", {})
         if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
             self._send_location_personalized_message(
                 numeros_data=[{"numero": number, "nombre": user}],
                 tipo_alarma_info=data_alert
             )
-            return
+        else:
+            alert_name = data_alert.get("nombre_alerta") or data_alert.get("tipo_alerta", "Alerta")
+            sede_name = data_alert.get("sede", "")
+            msg = f"Alerta {alert_name}"
+            if sede_name:
+                msg += f" en sede {sede_name}"
+            msg += ".\nSin ubicación disponible."
+            self.whatsapp_service.send_individual_message(phone=number, message=msg)
 
-        alert_name = data_alert.get("nombre_alerta") or data_alert.get("tipo_alerta", "Alerta")
-        sede_name = data_alert.get("sede", "")
-        msg = f"Alerta {alert_name}"
-        if sede_name:
-            msg += f" en sede {sede_name}"
-        msg += ".\nSin ubicación disponible."
-        self.whatsapp_service.send_individual_message(phone=number, message=msg)
+        # Botón "Estoy disponible": solo si pertenece a la sede y aún no está disponible
+        if is_in_sede and cached_info:
+            ya_disponible = cached_info.get("data", {}).get("disponible", False)
+            if not ya_disponible:
+                self._send_create_active_user(
+                    alert=data_alert,
+                    list_users=data_user,
+                    data_user=cached_info
+                )
 
     def _send_alert_conversation_summary(self, number: str, alert_id: str, limit: int = 15) -> None:
         """Envía al manager un resumen con los últimos N mensajes de usuarios (IN) de la alerta"""
