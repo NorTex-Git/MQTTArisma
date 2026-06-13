@@ -17,6 +17,7 @@ from utils.alert_normalizer import (
 from clients.mqtt_publisher_lite import MQTTPublisherLite
 from config.settings import MQTTConfig
 from handlers.empresa_alert_handler import EmpresaAlertHandler
+from models.alert_user import make_whatsapp_user
 from datetime import datetime, timedelta
 
 
@@ -163,38 +164,6 @@ class WebSocketMessageHandler:
         finally:
             self.is_processing = False
             self.logger.info("🔄 Procesador de cola de WhatsApp detenido")
-
-    def _has_creator_permission(self, payload: Optional[Dict]) -> bool:
-        """Determinar si el payload contiene permisos de creador"""
-        if not isinstance(payload, dict):
-            return False
-
-        role_data = None
-        if "rol" in payload:
-            role_data = payload.get("rol")
-        elif "data" in payload and isinstance(payload["data"], dict):
-            role_data = payload["data"].get("rol")
-
-        if isinstance(role_data, dict):
-            return bool(role_data.get("is_creator"))
-
-        return False
-
-    def _has_alert_manager_permission(self, payload: Optional[Dict]) -> bool:
-        """Determinar si el payload contiene permisos de manager de alertas"""
-        if not isinstance(payload, dict):
-            return False
-
-        role_data = None
-        if "rol" in payload:
-            role_data = payload.get("rol")
-        elif "data" in payload and isinstance(payload["data"], dict):
-            role_data = payload["data"].get("rol")
-
-        if isinstance(role_data, dict):
-            return bool(role_data.get("is_alert_manager"))
-
-        return False
 
     def _send_permission_denied_message(self, phone: str, user: str, action: str) -> None:
         """Notificar al usuario que no tiene privilegios para la acción solicitada"""
@@ -507,8 +476,10 @@ class WebSocketMessageHandler:
         is_button = entry[type_message].get("button_reply", False)
         #es para crear alarma
         exist_alert = cached_info["data"]
-        is_creator = self._has_creator_permission(cached_info)
-        is_alert_manager = self._has_alert_manager_permission(cached_info)
+        current_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id", "")
+        user_obj = make_whatsapp_user(cached_info, alert_id=current_alert_id)
+        is_creator = user_obj.is_creator        # alias de compatibilidad
+        is_alert_manager = user_obj.is_manager  # alias de compatibilidad
         # Log IN: registrar mensaje entrante si hay alerta asociada al usuario
         try:
             current_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")
@@ -738,7 +709,7 @@ class WebSocketMessageHandler:
                             self._send_permission_denied_message(number, user, "cambiar de alerta")
                             return
                         target_alert_id = opcion.replace("SWITCH_ALERT_", "", 1)
-                        self._handle_manager_switch(number=number, user=user, target_alert_id=target_alert_id, is_creator=is_creator, is_alert_manager=is_alert_manager)
+                        self._handle_manager_switch(number=number, user=user, target_alert_id=target_alert_id, user_obj=user_obj)
 
 
                 elif isinstance(exist_alert.get("disponible"), bool) and not exist_alert["disponible"]:
@@ -883,7 +854,7 @@ class WebSocketMessageHandler:
                         self._send_permission_denied_message(number, user, "cambiar de alerta")
                         return
                     target_alert_id = opcion_id.replace("SWITCH_ALERT_", "", 1)
-                    self._handle_manager_switch(number=number, user=user, target_alert_id=target_alert_id, is_creator=is_creator, is_alert_manager=is_alert_manager)
+                    self._handle_manager_switch(number=number, user=user, target_alert_id=target_alert_id, user_obj=user_obj)
                     return
                 if not is_creator:
                     self._send_permission_denied_message(number, user, "activar una alarma")
@@ -1164,7 +1135,7 @@ class WebSocketMessageHandler:
         self._send_create_alarma(number=number, usuario=usuario, empresa_id=empresa_id)
         return True
 
-    def _send_options_user(self, number: str, user: str, can_manage_alarm: bool, is_alert_manager: bool = False, is_in_alert: bool = True) -> bool:
+    def _send_options_user(self, number: str, user: str, can_manage_alarm: bool = False, is_alert_manager: bool = False, is_in_alert: bool = True) -> bool:
         if not self.whatsapp_service:
             self.logger.warning("⚠️ WhatsApp service no disponible")
             return False
@@ -1299,7 +1270,7 @@ class WebSocketMessageHandler:
         except Exception as ex:
             self.logger.error(f"Error en _send_manager_alert_picker: {ex}")
 
-    def _handle_manager_switch(self, number: str, user: str, target_alert_id: str, is_creator: bool, is_alert_manager: bool) -> None:
+    def _handle_manager_switch(self, number: str, user: str, target_alert_id: str, user_obj=None) -> None:
         """Procesar cambio de foco a la alerta elegida por el manager"""
         if not self.whatsapp_service or not self.backend_client:
             return
@@ -2015,7 +1986,7 @@ class WebSocketMessageHandler:
             self.logger.warning("⚠️ WhatsApp service no disponible")
             return False
 
-        if not self._has_creator_permission(data_user):
+        if not make_whatsapp_user(data_user).is_creator:
             return False
         try:
            # print(json.dumps(alert,indent=4))

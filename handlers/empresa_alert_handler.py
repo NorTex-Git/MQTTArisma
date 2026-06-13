@@ -12,6 +12,8 @@ from utils.alert_normalizer import (
 )
 from clients.mqtt_publisher_lite import MQTTPublisherLite
 from config.settings import MQTTConfig
+from models.alert_user import make_alert_user
+from models.alert_message_type import BROADCAST_MESSAGE_TYPES
 
 
 class EmpresaAlertHandler:
@@ -108,64 +110,55 @@ class EmpresaAlertHandler:
             self.logger.info(f"   🏢 Empresa: {empresa_nombre}")
             self.logger.info(f"   🏛️ Sede: {sede}")
 
-            # 1. Enviar plantilla de alerta creada
+            # 1. Fanout de notificaciones vía modelo OOP (plantilla / mapa / patch managers)
             template_success = True
+            manager_notify_success = True
             activacion_alerta = alert_data.get("activacion_alerta", {})
-            creador_nombre = activacion_alerta.get("nombre") or empresa_nombre
 
             # Resolver teléfono del creador. activacion_alerta solo tiene id+nombre,
             # buscamos en numeros_telefonicos por usuario_id para encontrar su teléfono.
             telefono_creador = self._resolve_creator_phone(activacion_alerta, usuarios_normalizados)
 
-            # Union sede + managers (managers reciben plantilla como cualquier usuario)
-            combined_by_phone: Dict[str, Dict] = {}
+            # Union sede + managers sin duplicados
+            all_by_phone: Dict[str, Dict] = {}
             for u in usuarios_normalizados:
                 num = u.get("numero")
                 if num:
-                    combined_by_phone[num] = u
+                    all_by_phone[num] = u
             for m in managers_normalizados:
                 num = m.get("numero")
-                if num and num not in combined_by_phone:
-                    combined_by_phone[num] = m
+                if num and num not in all_by_phone:
+                    all_by_phone[num] = m
 
-            if combined_by_phone:
-                template_recipients = [
-                    usuario for num, usuario in combined_by_phone.items()
-                    if not telefono_creador or num != telefono_creador
-                ]
+            alert_id_str = str(alert_data.get("_id", ""))
 
-                if template_recipients:
-                    template_success = self._send_alert_created_template(
-                        recipients=template_recipients,
-                        alert_info=alert_data,
-                        creator_name=creador_nombre
-                    )
-                else:
-                    self.logger.info("ℹ️ Sin destinatarios para plantilla de alerta creada")
-            else:
-                self.logger.info("ℹ️ No hay usuarios para notificar por WhatsApp")
+            # Construir objetos de usuario con OOP
+            alert_users = [
+                make_alert_user(u, telefono_creador, alert_id_str, self.whatsapp_service)
+                for u in all_by_phone.values()
+                if u.get("numero")
+            ]
 
-            # 1b. Notificar al creador (si pertenece a la sede): botón disponible + mapa
-            if telefono_creador:
-                creator_data = next((u for u in usuarios_normalizados if u.get("numero") == telefono_creador), None)
-                if creator_data:
-                    self._send_creator_notification(creator=creator_data, alert_data=alert_data)
-                else:
-                    self.logger.info("ℹ️ Creador no pertenece a la sede, sin notificación especial")
+            # Fanout de mensajes polimórfico
+            for user in alert_users:
+                for msg_type in BROADCAST_MESSAGE_TYPES:
+                    if msg_type.can_receive(user):
+                        msg_type.send(user, self.whatsapp_service, alert_data, self.logger)
+                # Ciclo de vida del cache
+                user.on_alert_broadcast(self.whatsapp_service)
 
-            # 1c. Registrar last_notified para managers (cross-sede menu tracking)
-            manager_notify_success = True
-            if managers_normalizados:
-                manager_recipients = [
-                    m for m in managers_normalizados
-                    if not telefono_creador or m.get("numero") != telefono_creador
-                ]
-                if manager_recipients:
-                    self._patch_managers_last_notified(
-                        managers=manager_recipients,
-                        alert_id=str(alert_data.get("_id", "")),
-                        sede=sede
-                    )
+            # Backend log de plantillas (no creators) — preserva trazabilidad is_template
+            template_logged = [
+                {"phone": u.phone, "template_name": "crear_alerta"}
+                for u in alert_users if not u.is_creator and u.phone
+            ]
+            if template_logged:
+                self._log_template_sends(
+                    alert_id=alert_id_str,
+                    template_name="crear_alerta",
+                    recipients=template_logged,
+                    summary_body=f"Plantilla crear_alerta enviada (alerta {alert_name})"
+                )
 
             # 2. Crear cache masivo para usuarios de la sede (excluye managers para respetar su foco)
             cache_success = True
@@ -690,71 +683,6 @@ class EmpresaAlertHandler:
             self.logger.error(f"❌ Error enviando mensaje de ubicación: {e}")
             return False
 
-    def _send_alert_created_template(
-        self,
-        recipients: List[Dict],
-        alert_info: Dict,
-        creator_name: Optional[str]
-    ) -> bool:
-        """Enviar plantilla 'crear_alerta' a los destinatarios previstos"""
-        if not self.whatsapp_service:
-            self.logger.warning("⚠️ WhatsApp service no disponible para plantilla de alerta")
-            return False
-
-        try:
-            template_recipients: List[Dict[str, Any]] = []
-            alert_name = alert_info.get("nombre_alerta") or alert_info.get("nombre") or "Alerta"
-            creador = creator_name or alert_info.get("activacion_alerta", {}).get("nombre", "un miembro autorizado")
-
-            for usuario in recipients:
-                numero = self._extract_phone_number(usuario)
-                if not numero:
-                    continue
-
-                recipient_name = usuario.get("nombre") or usuario.get("name") or "Usuario"
-
-                template_recipients.append({
-                    "phone": numero,
-                    "template_name": "crear_alerta",
-                    "language": "es_CO",
-                    "components": [
-                        {
-                            "type": "body",
-                            "parameters": [
-                                {"type": "text", "text": recipient_name},
-                                {"type": "text", "text": alert_name},
-                                {"type": "text", "text": creador}
-                            ]
-                        }
-                    ]
-                })
-
-            if not template_recipients:
-                self.logger.info("ℹ️ No hay destinatarios válidos para la plantilla de alerta creada")
-                return False
-
-            success = self.whatsapp_service.send_bulk_template(
-                recipients=template_recipients,
-                use_queue=True
-            )
-
-            if success:
-                self.logger.info(f"✅ Plantilla de alerta enviada a {len(template_recipients)} usuarios")
-                self._log_template_sends(
-                    alert_id=alert_info.get("_id"),
-                    template_name="crear_alerta",
-                    recipients=template_recipients,
-                    summary_body=f"Plantilla crear_alerta enviada (alerta {alert_name})"
-                )
-                return True
-
-            self.logger.error("❌ Error enviando plantilla de alerta")
-            return False
-
-        except Exception as e:
-            self.logger.error(f"❌ Error enviando plantilla de alerta: {e}")
-            return False
-
     def _extract_phone_number(self, data: Dict[str, Any]) -> str:
         """Obtener y normalizar el número telefónico del payload"""
         if not isinstance(data, dict):
@@ -1039,32 +967,6 @@ class EmpresaAlertHandler:
                 return usuario.get("numero", "")
         return ""
 
-    def _send_creator_notification(self, creator: Dict, alert_data: Dict) -> bool:
-        """Enviar al creador solo el mapa. El creador ya queda disponible al crear la alerta,
-        por lo que no se envía botón 'Estoy disponible' ni plantilla crear_alerta."""
-        if not self.whatsapp_service:
-            return False
-        try:
-            phone = creator.get("numero", "")
-            nombre = creator.get("nombre", "") or ""
-            if not phone:
-                return False
-
-            ubicacion = alert_data.get("ubicacion", {})
-            if not (isinstance(ubicacion, dict) and ubicacion.get("url_maps")):
-                self.logger.info(f"ℹ️ Creador {phone}: sin ubicación para enviar mapa")
-                return False
-
-            self._send_location_message_empresa(
-                usuarios=[{"phone": phone, "nombre": nombre}],
-                location=ubicacion
-            )
-            self.logger.info(f"✅ Mapa enviado al creador {phone}")
-            return True
-        except Exception as e:
-            self.logger.error(f"❌ Error en _send_creator_notification: {e}")
-            return False
-
     def _clean_focused_managers_after_deactivation(self, alert_id: str, nombre_alerta: str, sede: str) -> None:
         """Limpia info_alert/alert_active del cache de managers que tenían foco en esta alerta.
         Sin esto, sus mensajes posteriores quedaban asociados a la alerta cerrada."""
@@ -1096,30 +998,6 @@ class EmpresaAlertHandler:
                     self.logger.error(f"❌ Error limpiando foco manager {manager_phone}: {ex}")
         except Exception as ex:
             self.logger.error(f"Error en _clean_focused_managers_after_deactivation: {ex}")
-
-    def _patch_managers_last_notified(self, managers: List[Dict], alert_id: str, sede: str) -> None:
-        """PATCH cache de managers para guardar 'last_notified_alert' sin alterar su foco.
-        Solo actualiza si ya existe entry. NO crea cache automáticamente:
-        el manager solo entra a la conversación cuando él elige (CAMBIAR_ALERTA)."""
-        if not self.whatsapp_service or not alert_id or not managers:
-            return
-        try:
-            patch_data = {
-                "last_notified_alert": {
-                    "alert_id": alert_id,
-                    "sede": sede or ""
-                }
-            }
-            for m in managers:
-                phone = m.get("numero")
-                if not phone:
-                    continue
-                try:
-                    self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
-                except Exception as ex:
-                    self.logger.error(f"❌ Error PATCH last_notified_alert manager {phone}: {ex}")
-        except Exception as ex:
-            self.logger.error(f"Error en _patch_managers_last_notified: {ex}")
 
     def _log_template_sends(self, alert_id, template_name: str, recipients: List[Dict], summary_body: str) -> None:
         """Fire-and-forget: registra envíos de plantilla en backend (is_template=True)"""

@@ -536,6 +536,24 @@ class WhatsAppService:
             self.logger.error(f"Error en servicio WhatsApp actualizando cache: {e}")
             return False
 
+    def get_number_from_cache(self, phone: str) -> Optional[Dict]:
+        """
+        Obtener la entrada de cache de un número específico
+
+        Args:
+            phone: Número de teléfono (formato internacional)
+
+        Returns:
+            Dict con la entrada {phone, name, data} o None si no existe / error
+        """
+        try:
+            if not self.config.enabled:
+                return None
+            return self.client.get_number_from_cache(phone)
+        except Exception as e:
+            self.logger.error(f"Error en servicio WhatsApp obteniendo número del cache: {e}")
+            return None
+
     def send_bulk_template(self, recipients: List[Dict], use_queue: bool = True) -> bool:
         """
         Enviar plantillas de WhatsApp de manera masiva con componentes personalizados
