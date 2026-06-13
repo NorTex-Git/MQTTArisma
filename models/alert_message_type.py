@@ -79,22 +79,35 @@ class MapMessage(AlertMessageType):
 
 class ManagerLastNotifiedPatch(AlertMessageType):
     """
-    No envía mensaje WhatsApp. Solo actualiza last_notified_alert en cache.
-    Exclusivo para managers que NO son creators.
+    No envía mensaje WhatsApp: PATCH-only de last_notified_alert en cache.
+    Exclusivo para managers que NO son creators. NO crea entry si no existe
+    — el manager entra a la conversación solo cuando él elige (CAMBIAR_ALERTA).
     """
 
     def can_receive(self, user: "AlertUser") -> bool:
         return user.is_manager and not user.is_creator
 
     def send(self, user: "AlertUser", svc, alert_data: Dict, logger=None) -> None:
-        # on_alert_broadcast ya hace el PATCH. Este método es no-op.
-        # El PATCH se hace en el ciclo de lifecycle, no aquí.
-        pass
+        if not user.cache_exists(svc):
+            return
+        try:
+            svc.update_number_cache(
+                phone=user.phone,
+                data={
+                    "last_notified_alert": {
+                        "alert_id": user.alert_id,
+                        "sede": alert_data.get("sede", ""),
+                    }
+                },
+            )
+        except Exception as ex:
+            if logger:
+                logger.error(f"ManagerLastNotifiedPatch.send error {user.phone}: {ex}")
 
 
 # Orden importa: cada usuario recibe los mensajes que le corresponden
 BROADCAST_MESSAGE_TYPES = [
     TemplateMessage(),
     MapMessage(),
-    ManagerLastNotifiedPatch(),  # no-op en send, el PATCH va en on_alert_broadcast
+    ManagerLastNotifiedPatch(),  # PATCH-only de last_notified_alert
 ]

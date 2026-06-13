@@ -4,10 +4,30 @@ Cada subclase encapsula el comportamiento de cache y mensajería
 específico de cada rol, eliminando cadenas if/else dispersas en los handlers.
 """
 from __future__ import annotations
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from services.whatsapp_service import WhatsAppService
+
+
+def resolve_creator_phone(activacion_alerta: Dict, usuarios: List[Dict]) -> str:
+    """Resuelve el teléfono del creador buscando por usuario_id en la lista de sede.
+    activacion_alerta = {'id': usuario_id, 'nombre': ..., 'tipo_activacion': ...}.
+    Si tipo='hardware' o id ausente, devuelve ''."""
+    if not isinstance(activacion_alerta, dict):
+        return ""
+    tipo = (activacion_alerta.get("tipo_activacion") or "").lower()
+    if tipo == "hardware":
+        return ""
+    creator_id = activacion_alerta.get("id")
+    if not creator_id:
+        return ""
+    creator_id_str = str(creator_id)
+    for usuario in usuarios or []:
+        uid = usuario.get("usuario_id") or usuario.get("id")
+        if uid and str(uid) == creator_id_str:
+            return usuario.get("numero", "")
+    return ""
 
 
 class AlertUser:
@@ -120,20 +140,9 @@ class ManagerUser(AlertUser):
         return True
 
     def on_alert_broadcast(self, cache_svc) -> None:
-        # PATCH-only: registrar última alerta notificada sin tocar info_alert.
-        # NO crear entry si no existe — el manager entra solo cuando él elige.
-        if not self.cache_exists(cache_svc):
-            return
-        try:
-            patch = {
-                "last_notified_alert": {
-                    "alert_id": self.alert_id,
-                    "sede": self.rol.get("sede", ""),
-                }
-            }
-            cache_svc.update_number_cache(phone=self.phone, data=patch)
-        except Exception:
-            pass
+        # PATCH de last_notified_alert lo hace ManagerLastNotifiedPatch.send
+        # durante el fanout. Aquí no se toca el cache.
+        pass
 
     def on_alert_deactivated(self, cache_svc) -> None:
         # Solo limpiar si tenía foco en esta alerta específica

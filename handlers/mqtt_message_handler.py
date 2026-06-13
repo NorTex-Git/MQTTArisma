@@ -13,7 +13,7 @@ from utils.alert_normalizer import (
     build_tv_topic,
     normalize_alert_to_tv,
 )
-from models.alert_user import make_alert_user
+from models.alert_user import make_alert_user, resolve_creator_phone
 from models.alert_message_type import BROADCAST_MESSAGE_TYPES
 
 
@@ -220,7 +220,7 @@ class MQTTMessageHandler:
                 manager_phone_set = {m.get("numero") for m in managers_normalizados if m.get("numero")}
 
                 activacion_alerta = alert_data.get("activacion_alerta", {})
-                telefono_creador = self._resolve_creator_phone(activacion_alerta, usuarios_normalizados)
+                telefono_creador = resolve_creator_phone(activacion_alerta, usuarios_normalizados)
 
                 # Union sede + managers sin duplicados
                 all_by_phone: Dict[str, Dict] = {}
@@ -475,25 +475,6 @@ class MQTTMessageHandler:
         topic = build_tv_topic(empresa=empresa, sede=sede, pantalla=pantalla)
         self.send_mqtt_message(topic=topic, message_data=normalized)
   
-    def _resolve_creator_phone(self, activacion_alerta: Dict, usuarios: List[Dict]) -> str:
-        """Resuelve el teléfono del creador buscando por usuario_id en la lista de sede.
-        activacion_alerta = {'id': usuario_id, 'nombre': ..., 'tipo_activacion': ...}.
-        Si tipo='hardware' o id ausente, devuelve ''."""
-        if not isinstance(activacion_alerta, dict):
-            return ""
-        tipo = (activacion_alerta.get("tipo_activacion") or "").lower()
-        if tipo == "hardware":
-            return ""
-        creator_id = activacion_alerta.get("id")
-        if not creator_id:
-            return ""
-        creator_id_str = str(creator_id)
-        for usuario in usuarios or []:
-            uid = usuario.get("usuario_id") or usuario.get("id")
-            if uid and str(uid) == creator_id_str:
-                return usuario.get("numero", "")
-        return ""
-
     def _send_location_personalized_message(self, numeros_data: list, hardware_location: Dict) -> bool:
         """Enviar mensaje de ubicación por WhatsApp usando CTA 'Abrir en Maps'"""
 

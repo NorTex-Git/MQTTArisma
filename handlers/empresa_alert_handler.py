@@ -12,7 +12,7 @@ from utils.alert_normalizer import (
 )
 from clients.mqtt_publisher_lite import MQTTPublisherLite
 from config.settings import MQTTConfig
-from models.alert_user import make_alert_user
+from models.alert_user import make_alert_user, resolve_creator_phone
 from models.alert_message_type import BROADCAST_MESSAGE_TYPES
 
 
@@ -117,7 +117,7 @@ class EmpresaAlertHandler:
 
             # Resolver teléfono del creador. activacion_alerta solo tiene id+nombre,
             # buscamos en numeros_telefonicos por usuario_id para encontrar su teléfono.
-            telefono_creador = self._resolve_creator_phone(activacion_alerta, usuarios_normalizados)
+            telefono_creador = resolve_creator_phone(activacion_alerta, usuarios_normalizados)
 
             # Union sede + managers sin duplicados
             all_by_phone: Dict[str, Dict] = {}
@@ -947,25 +947,6 @@ class EmpresaAlertHandler:
 
         except Exception as e:
             self.logger.error(f"❌ Error deteniendo Empresa Handler: {e}")
-
-    def _resolve_creator_phone(self, activacion_alerta: Dict, usuarios: List[Dict]) -> str:
-        """Resuelve el teléfono del creador buscando por usuario_id en la lista de sede.
-        activacion_alerta = {'id': usuario_id, 'nombre': ..., 'tipo_activacion': ...}.
-        Si tipo='hardware' o id ausente, devuelve ''."""
-        if not isinstance(activacion_alerta, dict):
-            return ""
-        tipo = (activacion_alerta.get("tipo_activacion") or "").lower()
-        if tipo == "hardware":
-            return ""
-        creator_id = activacion_alerta.get("id")
-        if not creator_id:
-            return ""
-        creator_id_str = str(creator_id)
-        for usuario in usuarios or []:
-            uid = usuario.get("usuario_id") or usuario.get("id")
-            if uid and str(uid) == creator_id_str:
-                return usuario.get("numero", "")
-        return ""
 
     def _clean_focused_managers_after_deactivation(self, alert_id: str, nombre_alerta: str, sede: str) -> None:
         """Limpia info_alert/alert_active del cache de managers que tenían foco en esta alerta.

@@ -1058,8 +1058,15 @@ class WebSocketMessageHandler:
         else:
             normalized_role = {"is_creator": False, "is_alert_manager": False}
 
-        is_creator = normalized_role.get("is_creator", False)
-        is_alert_manager = normalized_role.get("is_alert_manager", False)
+        # Misma decisión de rol que _process_save_number, vía modelo OOP.
+        # Usuario nuevo aún sin cache → snapshot mínimo desde verify_number.
+        user_obj = make_whatsapp_user({
+            "phone": verify_number["telefono"],
+            "name": usuario,
+            "data": {"rol": normalized_role},
+        })
+        is_creator = user_obj.is_creator
+        is_alert_manager = user_obj.is_manager
 
         # Agregar número al cache de WhatsApp
         if self.whatsapp_service:
