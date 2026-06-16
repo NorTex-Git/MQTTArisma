@@ -270,80 +270,6 @@ class WebSocketMessageHandler:
         except Exception as ex:
             self.logger.error(f"Hubo un error en alarm_back_save {ex}")
             return False
-    def _create_bulk_cache(self,alarm_info:Dict,list_users: Dict,cache_creator:Dict) -> None:
-        try:
-            # print(json.dumps(alarm_info,indent=3))
-            # print(json.dumps(list_users,indent=3))
-            if isinstance(list_users, dict):
-                list_users = list(list_users.values())
-            elif not isinstance(list_users, list):
-                self.logger.warning("⚠️ list_users inválido para cache: %s", type(list_users).__name__)
-                return
-
-            data_cache = cache_creator.get("data", {})
-            """
-            Este es un ejemplo del data del cache
-               "data": {
-                    "alert_active": false,
-                    "empresa": "Nicolas Empresa",
-                    "id": "6875e231a37810d0a8dc508e",
-                    "info_alert": {
-                        "alert_title": "Inundaci\u00f3n",
-                        "datetime": "2025-07-29 17:49:28.002298",
-                        "description": "Alerta por inundaci\u00f3n",
-                        "type_alert": "AZUL"
-                    },
-                    "sede": "Secundaria"
-                },
-      
-
-            """
-            empresa_id = data_cache.get("empresa_id")
-            empresa_nombre = (
-                data_cache.get("empresa")
-                or alarm_info.get("empresa")
-                or alarm_info.get("empresa_nombre", "")
-            )
-
-            for user in list_users:
-                if not isinstance(user, dict):
-                    continue
-                data_user = {
-                    "id": user.get("usuario_id") or user.get("id"),
-                    "alert_active": True,
-                    "empresa": empresa_nombre,
-                    "disponible": user.get("disponible", True),
-                    "embarcado": user.get("embarcado", False),
-                    "info_alert": {
-                        "alert_id": alarm_info.get("_id") or alarm_info.get("alert_id")
-                    }
-                }
-
-                role_info = user.get("rol") if isinstance(user, dict) else None
-                if isinstance(role_info, dict):
-                    data_user["rol"] = {
-                        "nombre": role_info.get("nombre") or role_info.get("name", ""),
-                        "is_creator": bool(role_info.get("is_creator"))
-                    }
-                if empresa_id:
-                    data_user["empresa_id"] = empresa_id
-                phone = user.get("numero") or user.get("telefono", "")
-                if not phone:
-                    continue
-                added = self.whatsapp_service.add_number_to_cache(
-                    phone=phone,
-                    name=user.get("nombre", ""),
-                    data=data_user,
-                    empresa_id=empresa_id
-                )
-                if not added:
-                    self.whatsapp_service.update_number_cache(
-                        phone=phone,
-                        data=data_user,
-                        empresa_id=empresa_id
-                    )
-        except Exception as ex:
-            self.logger.error(f"Error en _create_bulk_cache {ex}")
     def _create_alarm(self,cached_info:Dict,ubication:Dict) -> bool:
         try:
             #print(json.dumps(ubication,indent=3))
@@ -2250,7 +2176,8 @@ class WebSocketMessageHandler:
             empresa_message = {
                 "type": "alert_created_by_empresa",
                 "timestamp": alert_data.get("fecha_creacion", ""),
-                "alert": alert_data
+                "alert": alert_data,
+                "alert_managers": message_data.get("alert_managers", [])
             }
             
             # Procesar con el empresa handler

@@ -13,8 +13,6 @@ from utils.alert_normalizer import (
     build_tv_topic,
     normalize_alert_to_tv,
 )
-from models.alert_user import make_alert_user, resolve_creator_phone
-from models.alert_message_type import BROADCAST_MESSAGE_TYPES
 
 
 _DEDUP_WINDOW_SECONDS = 2
@@ -184,9 +182,9 @@ class MQTTMessageHandler:
             return False
 
     def _handle_alarm_notifications(self, response: Dict, mqtt_data: Dict) -> None:
-        """Procesar respuesta del backend y enviar notificaciones - COMPLETO como WebSocket handler"""
+        """Procesar respuesta del backend: solo fanout MQTT a otros hardware.
+        WhatsApp (usuarios + managers) lo maneja process_empresa_activation via HTTP callback del backend."""
         try:
-            # Registrar payloads completos para inspección en producción
             if self.logger.isEnabledFor(logging.INFO):
                 self.logger.info(
                     "📥 Respuesta cruda del backend: %s",
@@ -203,96 +201,11 @@ class MQTTMessageHandler:
                 self.logger.warning("⚠️ Respuesta del backend sin datos de alerta")
                 return
 
-            # ENVIAR MENSAJES MQTT A OTROS HARDWARE
+            # Solo fanout MQTT a otros hardware (SEMAFORO, PANTALLA, etc.)
+            # WhatsApp lo delega el backend via trigger_fanout → process_empresa_activation
             self._send_mqtt_message(alert_data=alert_data, mqtt_data=mqtt_data)
+            self.logger.info("✅ Fanout MQTT completado")
 
-            # PROCESAR NOTIFICACIONES WHATSAPP (solo plantilla + cache)
-            template_success = True
-            cache_success = True
-
-            if self.whatsapp_service and alert_data:
-                list_users = alert_data.get("numeros_telefonicos", [])
-                usuarios_normalizados = self._normalize_usuarios_list(list_users)
-
-                # Managers de la empresa: notificar pero NO modificar su cache
-                alert_managers_raw = response.get("alert_managers", []) if isinstance(response, dict) else []
-                managers_normalizados = self._normalize_usuarios_list(alert_managers_raw)
-                manager_phone_set = {m.get("numero") for m in managers_normalizados if m.get("numero")}
-
-                activacion_alerta = alert_data.get("activacion_alerta", {})
-                telefono_creador = resolve_creator_phone(activacion_alerta, usuarios_normalizados)
-
-                # Union sede + managers sin duplicados
-                all_by_phone: Dict[str, Dict] = {}
-                for u in usuarios_normalizados:
-                    num = u.get("numero")
-                    if num:
-                        all_by_phone[num] = u
-                for m in managers_normalizados:
-                    num = m.get("numero")
-                    if num and num not in all_by_phone:
-                        all_by_phone[num] = m
-
-                if all_by_phone:
-                    alert_id_str = str(alert_data.get("_id", ""))
-                    alert_name = alert_data.get("nombre_alerta") or alert_data.get("nombre") or "Alerta"
-
-                    # Construir objetos de usuario con OOP
-                    alert_users = [
-                        make_alert_user(u, telefono_creador, alert_id_str, self.whatsapp_service)
-                        for u in all_by_phone.values()
-                        if u.get("numero")
-                    ]
-
-                    # Fanout de mensajes polimórfico + ciclo de vida de cache
-                    for user in alert_users:
-                        for msg_type in BROADCAST_MESSAGE_TYPES:
-                            if msg_type.can_receive(user):
-                                msg_type.send(user, self.whatsapp_service, alert_data, self.logger)
-                        user.on_alert_broadcast(self.whatsapp_service)
-
-                    # Backend log de plantillas (no creators)
-                    template_logged = [
-                        {"phone": u.phone, "template_name": "crear_alerta"}
-                        for u in alert_users if not u.is_creator and u.phone
-                    ]
-                    if template_logged:
-                        self._log_template_sends(
-                            alert_id=alert_id_str,
-                            recipients=template_logged,
-                            summary_body=f"Plantilla crear_alerta enviada (alerta {alert_name})"
-                        )
-
-                    # Cache solo para usuarios de la sede (excluye managers para respetar su foco)
-                    cache_targets = [
-                        u for u in usuarios_normalizados
-                        if u.get("numero") not in manager_phone_set
-                    ]
-                    if cache_targets:
-                        cache_success = self._create_bulk_cache(
-                            alarm_info=alert_data,
-                            list_users=cache_targets,
-                            mqtt_data=mqtt_data
-                        )
-                    else:
-                        self.logger.info("ℹ️ Sin usuarios para cache (todos son managers)")
-                else:
-                    self.logger.warning("⚠️ No hay usuarios válidos en la respuesta del backend")
-            else:
-                if not self.whatsapp_service:
-                    self.logger.info("ℹ️ WhatsApp service no disponible - solo procesamiento MQTT")
-                else:
-                    self.logger.warning("⚠️ Respuesta del backend sin datos de alerta")
-
-            if not (template_success and cache_success):
-                self.logger.warning(
-                    "⚠️ Flujo de notificaciones vía MQTT incompleto | plantilla=%s cache=%s",
-                    template_success,
-                    cache_success
-                )
-            
-            self.logger.info(f"✅ Procesamiento completo de notificaciones completado")
-            
         except Exception as e:
             self.logger.error(f"❌ Error manejando notificaciones: {e}")
     
@@ -536,79 +449,6 @@ class MQTTMessageHandler:
             self.logger.debug(f"_log_template_sends ignorado: {exc}")
 
 
-    @staticmethod
-    def _has_creator_permission(payload: Dict) -> bool:
-        if not isinstance(payload, dict):
-            return False
-        role_data = payload.get("rol")
-        if isinstance(role_data, dict):
-            return bool(role_data.get("is_creator"))
-        data = payload.get("data")
-        if isinstance(data, dict):
-            role_data = data.get("rol")
-            if isinstance(role_data, dict):
-                return bool(role_data.get("is_creator"))
-        return False
-
-    def _send_create_down_alarma(self, list_users: list, alert: Dict, data_user: Dict = {},alert_id = str) -> bool:
-        """Crear notificación de alarma por WhatsApp"""
-        if not self.whatsapp_service:
-            self.logger.warning("⚠️ WhatsApp service no disponible")
-            return False
-            
-        try:
-           # print(json.dumps(alert,indent=4))
-            id_alert = alert_id
-            image = alert["imagen_base64"]
-            alert_name = alert["nombre"]
-            empresa = "en " + data_user.get("empresa", "la empresa")
-            recipients_button = []
-            recipients_plain = []
-
-            for item in list_users:
-                body_text = f"¡Hola {item['nombre']}!.\nAlerta de {alert_name} {empresa}"
-                button_target = {
-                    "phone": item.get("numero", ""),
-                    "body_text": body_text
-                }
-
-                if self._has_creator_permission(item):
-                    recipients_button.append(button_target)
-                else:
-                    recipients_plain.append({
-                        "phone": item.get("numero", ""),
-                        "message": f"{body_text}\n\nNo tienes permisos para apagar la alarma."
-                    })
-
-            buttons = [
-                {
-                    "id": id_alert,
-                    "title": "Apagar alarma"
-                }
-            ]
-
-            if recipients_button:
-                self.whatsapp_service.send_bulk_button_message(
-                    header_type="image",
-                    header_content=image,
-                    buttons=buttons,
-                    footer_text="Sistema RESCUE",
-                    recipients=recipients_button,
-                    use_queue=True
-                )
-
-            if recipients_plain:
-                self.whatsapp_service.send_bulk_individual(
-                    recipients=recipients_plain,
-                    use_queue=True
-                )
-
-            return bool(recipients_button or recipients_plain)
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error enviando notificación de alarma: {e}")
-            return False
-
     def send_mqtt_message(self, topic: str, message_data: Dict, qos: int = 0) -> bool:
         """Enviar mensajes MQTT a un topic específico"""
         try:
@@ -628,114 +468,6 @@ class MQTTMessageHandler:
                 
         except Exception as e:
             self.logger.error(f"❌ Error enviando mensaje MQTT: {e}")
-            return False
-   
-    def _send_create_active_user(self, alert: Dict, list_users: list, mqtt_data: Dict) -> bool:
-        """Crear notificación de activación de usuario por WhatsApp - IGUAL al WebSocket handler"""
-        if not self.whatsapp_service:
-            self.logger.warning("⚠️ WhatsApp service no disponible")
-            return False
-            
-        try:
-            # Usar los mismos campos que el WebSocket handler
-            data_create = alert.get("activacion_alerta", {})
-            image = alert["image_alert"]
-            alert_name = alert["nombre_alerta"]
-            empresa = mqtt_data.get("empresa", "la empresa")
-            recipients = []
-            footer = f"Creada por {data_create.get('nombre', 'Hardware')}\nEquipo RESCUE"
-            
-            for item in list_users:
-                nombre = str(item["nombre"])
-                body_text = f"¡Hola {nombre.split()[0].upper()}!.\nAlerta de {alert_name} en {empresa}."
-                data = {
-                    "phone": item.get("numero", ""),
-                    "body_text": body_text
-                }
-                recipients.append(data)
-                
-            buttons = [
-                {
-                    "id": "Activar_User",
-                    "title": "Estoy disponible"
-                }
-            ]
-            
-            self.whatsapp_service.send_bulk_button_message(
-                header_type="image",
-                header_content=image,
-                buttons=buttons,
-                footer_text=footer,
-                recipients=recipients,
-                use_queue=True
-            )
-            self.logger.info(f"✅ Notificación de activación de usuario enviada a {len(recipients)} usuarios")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error enviando notificación de activación de usuario: {e}")
-            return False
-
-    def _create_bulk_cache(self, alarm_info: Dict, list_users: list, mqtt_data: Dict) -> bool:
-        """Crear cache masivo actualizado para todos los usuarios"""
-        try:
-            success_count = 0
-            empresa_id = alarm_info.get("empresa_id")
-            if not empresa_id:
-                empresa_data = alarm_info.get("empresa")
-                if isinstance(empresa_data, dict):
-                    empresa_id = empresa_data.get("id") or empresa_data.get("_id")
-
-            for user in list_users:
-                user_id = user.get("usuario_id", "")
-                cache_data = {
-                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),  # Fecha de creacion
-                    "data": {
-                        "alert_active": True,
-                        "disponible": user.get("disponible", True),
-                        "embarcado": user.get("embarcado", False),
-                        "empresa": mqtt_data.get("empresa", ""),
-                        "id": user_id,
-                        "info_alert": {
-                            "alert_id": alarm_info.get("_id", "")
-                        }
-                    },
-                    "name": user.get("nombre", ""),
-                    "phone": user.get("numero", "")
-                }
-
-                role_info = user.get("rol") if isinstance(user, dict) else None
-                if isinstance(role_info, dict):
-                    cache_data["data"]["rol"] = {
-                        "nombre": role_info.get("nombre") or role_info.get("name", ""),
-                        "is_creator": bool(role_info.get("is_creator")),
-                        "is_alert_manager": bool(role_info.get("is_alert_manager"))
-                    }
-
-                if empresa_id:
-                    cache_data["data"]["empresa_id"] = empresa_id
-                
-                # Simular guardar en el cache
-                added = self.whatsapp_service.add_number_to_cache(
-                    phone=user.get("numero", ""),
-                    name=user.get("nombre", ""),
-                    data=cache_data["data"],
-                    empresa_id=empresa_id
-                )
-                if added:
-                    success_count += 1
-                    if self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug(
-                            "📝 Cache creado para usuario %s: %s",
-                            user.get("numero"),
-                            json.dumps(cache_data, indent=2)
-                        )
-                else:
-                    self.logger.warning(f'⚠️ Error creando cache para usuario {user.get("numero")}')
-            self.logger.info(f'✅ Cache masivo actualizado creado para {success_count}/{len(list_users)} usuarios')
-            return success_count > 0
-        except Exception as e:
-            self.logger.error(f'❌ Error creando cache masivo actualizado: {e}')
             return False
 
     def _extract_phone_number(self, data: Dict[str, Any]) -> str:

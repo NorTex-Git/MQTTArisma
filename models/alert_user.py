@@ -41,6 +41,7 @@ class AlertUser:
         alert_id: str,
         cache_entry: Optional[Dict] = None,
         usuario_id: str = "",
+        is_in_sede: bool = False,
     ):
         self.phone = phone
         self.nombre = nombre
@@ -48,6 +49,7 @@ class AlertUser:
         self.alert_id = str(alert_id) if alert_id else ""
         self._cache = cache_entry or {}
         self.usuario_id = usuario_id
+        self.is_in_sede = is_in_sede
 
     # --- Identidad ---
     @property
@@ -216,6 +218,7 @@ def make_alert_user(
     creator_phone: str,
     alert_id: str,
     cache_svc=None,
+    is_in_sede: bool = False,
 ) -> AlertUser:
     """
     Construye el AlertUser correcto a partir del dict de usuario.
@@ -226,6 +229,7 @@ def make_alert_user(
                        Si es '' o None → ningún usuario es creator.
         alert_id: ID de la alerta en contexto.
         cache_svc: WhatsAppService (para leer snapshot del cache).
+        is_in_sede: True si el número aparece en numeros_telefonicos de la alerta.
     """
     phone = (usuario_dict.get("numero") or "").strip()
     nombre = usuario_dict.get("nombre", "")
@@ -260,6 +264,7 @@ def make_alert_user(
         alert_id=alert_id,
         cache_entry=cache_entry,
         usuario_id=usuario_id,
+        is_in_sede=is_in_sede,
     )
 
 

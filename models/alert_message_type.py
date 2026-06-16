@@ -20,10 +20,10 @@ class AlertMessageType:
 
 
 class TemplateMessage(AlertMessageType):
-    """Plantilla 'crear_alerta' — para todos excepto el creador."""
+    """Plantilla 'crear_alerta' — solo para managers cross-sede (no están en numeros_telefonicos)."""
 
     def can_receive(self, user: "AlertUser") -> bool:
-        return not user.is_creator
+        return not user.is_creator and user.is_manager and not user.is_in_sede
 
     def send(self, user: "AlertUser", svc, alert_data: Dict, logger=None) -> None:
         alert_name = alert_data.get("nombre_alerta") or alert_data.get("tipo_alerta") or "Alerta"
@@ -105,9 +105,53 @@ class ManagerLastNotifiedPatch(AlertMessageType):
                 logger.error(f"ManagerLastNotifiedPatch.send error {user.phone}: {ex}")
 
 
+class AvailableButtonMessage(AlertMessageType):
+    """Botón 'Estoy disponible' — para todos los miembros de la sede (sin importar rol), excepto el creador."""
+
+    def can_receive(self, user: "AlertUser") -> bool:
+        return user.is_in_sede and not user.is_creator
+
+    def send(self, user: "AlertUser", svc, alert_data: Dict, logger=None) -> None:
+        alert_name = alert_data.get("nombre_alerta") or alert_data.get("tipo_alerta", "Alerta")
+        empresa_nombre = alert_data.get("empresa_nombre", "La Empresa")
+        activacion = alert_data.get("activacion_alerta") or {}
+        creador_nombre = activacion.get("nombre") or empresa_nombre
+        image_alert = alert_data.get("image_alert", "")
+        footer = f"Creada por {creador_nombre}\nEquipo RESCUE"
+        nombre_display = (user.nombre or "Usuario").split()[0].upper()
+        body_text = f"¡Hola {nombre_display}!.\nAlerta de {alert_name} en {empresa_nombre}."
+
+        recipients = [{"phone": user.phone, "body_text": body_text}]
+        buttons = [{"id": "Activar_User", "title": "Estoy disponible"}]
+
+        try:
+            if image_alert:
+                svc.send_bulk_button_message(
+                    header_type="image",
+                    header_content=image_alert,
+                    buttons=buttons,
+                    footer_text=footer,
+                    recipients=recipients,
+                    use_queue=True,
+                )
+            else:
+                svc.send_bulk_button_message(
+                    header_type="text",
+                    header_content=f"ALERTA {alert_name.upper()}",
+                    buttons=buttons,
+                    footer_text=footer,
+                    recipients=recipients,
+                    use_queue=True,
+                )
+        except Exception as ex:
+            if logger:
+                logger.error(f"AvailableButtonMessage.send error {user.phone}: {ex}")
+
+
 # Orden importa: cada usuario recibe los mensajes que le corresponden
 BROADCAST_MESSAGE_TYPES = [
-    TemplateMessage(),
-    MapMessage(),
-    ManagerLastNotifiedPatch(),  # PATCH-only de last_notified_alert
+    AvailableButtonMessage(),    # botón "Estoy disponible" → sede (no creator, no manager)
+    TemplateMessage(),           # plantilla crear_alerta → managers (no creator)
+    MapMessage(),                # mapa ubicación → creator
+    ManagerLastNotifiedPatch(),  # PATCH-only de last_notified_alert → managers
 ]

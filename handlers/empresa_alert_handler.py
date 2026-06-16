@@ -120,10 +120,12 @@ class EmpresaAlertHandler:
             telefono_creador = resolve_creator_phone(activacion_alerta, usuarios_normalizados)
 
             # Union sede + managers sin duplicados
+            sede_phones: set = set()
             all_by_phone: Dict[str, Dict] = {}
             for u in usuarios_normalizados:
                 num = u.get("numero")
                 if num:
+                    sede_phones.add(num)
                     all_by_phone[num] = u
             for m in managers_normalizados:
                 num = m.get("numero")
@@ -134,7 +136,10 @@ class EmpresaAlertHandler:
 
             # Construir objetos de usuario con OOP
             alert_users = [
-                make_alert_user(u, telefono_creador, alert_id_str, self.whatsapp_service)
+                make_alert_user(
+                    u, telefono_creador, alert_id_str, self.whatsapp_service,
+                    is_in_sede=(u.get("numero") in sede_phones),
+                )
                 for u in all_by_phone.values()
                 if u.get("numero")
             ]
