@@ -1281,9 +1281,13 @@ class WebSocketMessageHandler:
             )
             return
 
-        # Determinar membresía de sede
+        # Determinar membresía de sede (normalizar "+" para evitar mismatch de formato)
+        def _norm(p: str) -> str:
+            return (p or "").strip().lstrip("+")
+
+        norm_number = _norm(number)
         data_user = [u for u in (data_alert.get("numeros_telefonicos") or [])
-                     if u.get("numero") == number]
+                     if _norm(u.get("numero", "")) == norm_number]
         is_in_sede = bool(data_user)
 
         # Mapa (siempre, si hay url_maps)
