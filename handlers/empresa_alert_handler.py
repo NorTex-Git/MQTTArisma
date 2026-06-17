@@ -762,21 +762,23 @@ class EmpresaAlertHandler:
 
                 if empresa_id:
                     cache_data["empresa_id"] = empresa_id
-                
-                # Agregar al cache
+
+                # Agregar al cache (no forzar reset de disponible/embarcado — el usuario
+                # mantiene su estado de alerta anterior. Cuando reciba la nueva alerta
+                # y toque "Ver detalles", verá el botón de nuevo y él decide si cambia foco).
                 response = self.whatsapp_service.add_number_to_cache(
                     phone=telefono,
                     name=nombre,
                     data=cache_data,
                     empresa_id=empresa_id
                 )
-                
+
                 if response:
                     success_count += 1
                     self.logger.debug(f"📝 Cache creado para usuario {telefono}")
                 else:
                     self.logger.warning(f"⚠️ Error creando cache para usuario {telefono}")
-            
+
             self.logger.info(f"✅ Cache masivo creado para {success_count}/{len(usuarios)} usuarios")
             return success_count > 0
             

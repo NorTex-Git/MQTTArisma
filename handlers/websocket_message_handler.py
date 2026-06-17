@@ -472,22 +472,18 @@ class WebSocketMessageHandler:
                     )
                     #esto valida si es para activacion de un usuario
                     if type_button == "Activar_User":
-                        # Idempotencia: si ya está disponible, no re-llamar backend
-                        if exist_alert.get("disponible") is True:
-                            self.whatsapp_service.send_individual_message(
-                                phone=number,
-                                message="Ya estabas marcado como disponible. Sigues recibiendo mensajes del equipo."
-                            )
-                            return
+                        # Disponibilidad ES POR ALERTA en backend (no global en cache).
+                        # Siempre informar backend — él es source of truth per-alerta.
+                        # Cache.disponible es solo hint local, puede estar stale de otra alerta.
                         self.backend_client.update_user_status(
                             alert_id=id_alert,
                             usuario_id=id_user,
                             disponible=True,
                         )
-                        data_update = {"disponible": True}
+                        # Cache update: refleja que está disponible para LA ALERTA EN FOCO actual
                         self.whatsapp_service.update_number_cache(
                             phone=number,
-                            data=data_update,
+                            data={"disponible": True},
                             empresa_id=cached_info.get("data", {}).get("empresa_id")
                         )
                         self.whatsapp_service.send_individual_message(
@@ -856,13 +852,9 @@ class WebSocketMessageHandler:
                         message="No hay alerta activa para marcar disponibilidad."
                     )
                     return
-                # Idempotencia
-                if exist_alert.get("disponible") is True:
-                    self.whatsapp_service.send_individual_message(
-                        phone=number,
-                        message="Ya estabas marcado como disponible. Sigues recibiendo mensajes del equipo."
-                    )
-                    return
+                # Disponibilidad es POR ALERTA en backend (no global). Siempre informar
+                # backend — él decide idempotencia per-alerta. Cache.disponible es hint
+                # local que puede estar stale de otra alerta anterior.
                 try:
                     self.backend_client.update_user_status(
                         alert_id=target_alert_id,
@@ -1517,14 +1509,23 @@ class WebSocketMessageHandler:
             msg += ".\nSin ubicación disponible."
             self.whatsapp_service.send_individual_message(phone=number, message=msg)
 
-        # Botón "Estoy disponible": solo si pertenece a la sede y aún no está disponible
-        if is_in_sede and cached_info:
-            ya_disponible = cached_info.get("data", {}).get("disponible", False)
-            if not ya_disponible:
+        # Botón "Estoy disponible": pertenece a la sede + no está disponible PARA ESTA alerta.
+        # CRÍTICO: leer disponibilidad del backend (data_alert.numeros_telefonicos[].disponible),
+        # NO del cache local. El cache puede tener disponible=True de una alerta anterior
+        # que aún no se ha desactivado — sería bug enviar/no enviar basado en ese flag stale.
+        if is_in_sede:
+            ya_disponible_en_esta_alerta = False
+            if data_user and isinstance(data_user[0], dict):
+                ya_disponible_en_esta_alerta = bool(data_user[0].get("disponible", False))
+            if not ya_disponible_en_esta_alerta:
                 self._send_create_active_user(
                     alert=data_alert,
                     list_users=data_user,
-                    data_user=cached_info
+                    data_user=cached_info or {}
+                )
+            else:
+                self.logger.info(
+                    f"ℹ️ Usuario {number} ya marcado disponible PARA ESTA alerta — botón omitido"
                 )
 
     def _send_alert_conversation_summary(self, number: str, alert_id: str, limit: int = 15) -> None:
