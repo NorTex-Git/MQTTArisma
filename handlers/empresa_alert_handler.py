@@ -174,41 +174,8 @@ class EmpresaAlertHandler:
             else:
                 self.logger.info("ℹ️ No hay usuarios para crear cache (todos son managers o lista vacía)")
 
-            # 2b. Patch metadata managers (rol/empresa_id/id). Solo si ya existen en cache
-            # (cache se crea cuando el manager mande primer mensaje al bot). Usa flag
-            # persistida en AlertUser para evitar GET redundante.
-            if self.whatsapp_service:
-                empresa_id_for_patch = alert_data.get("empresa_id")
-                if not empresa_id_for_patch:
-                    empresa_data = alert_data.get("empresa")
-                    if isinstance(empresa_data, dict):
-                        empresa_id_for_patch = empresa_data.get("id") or empresa_data.get("_id")
-                for user in alert_users:
-                    if not user.is_manager:
-                        continue
-                    if not user.cache_exists():
-                        self.logger.debug(f"ℹ️ Manager {user.phone} aún no registrado en cache, skip patch")
-                        continue
-                    patch_data = {
-                        "empresa": empresa_nombre,
-                        "id": user.usuario_id,
-                    }
-                    if user.rol:
-                        patch_data["rol"] = {
-                            "nombre": user.rol.get("nombre") or user.rol.get("name", ""),
-                            "is_creator": bool(user.rol.get("is_creator")),
-                            "is_alert_manager": bool(user.rol.get("is_alert_manager")),
-                        }
-                    if empresa_id_for_patch:
-                        patch_data["empresa_id"] = empresa_id_for_patch
-                    try:
-                        self.whatsapp_service.update_number_cache(
-                            phone=user.phone,
-                            data=patch_data,
-                            empresa_id=empresa_id_for_patch,
-                        )
-                    except Exception as ex:
-                        self.logger.warning(f"⚠️ No se pudo actualizar cache de manager {user.phone}: {ex}")
+            # 2b. Metadata managers ya manejada por ManagerLastNotifiedPatch en el fanout
+            # (crea entry si no existe, patch si existe). No hay block separado redundante.
 
             # 3. Enviar comandos MQTT a dispositivos hardware
             mqtt_success = True

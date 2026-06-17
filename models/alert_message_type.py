@@ -79,26 +79,60 @@ class MapMessage(AlertMessageType):
 
 class ManagerLastNotifiedPatch(AlertMessageType):
     """
-    No envía mensaje WhatsApp: PATCH-only de last_notified_alert en cache.
-    Exclusivo para managers que NO son creators. NO crea entry si no existe
-    — el manager entra a la conversación solo cuando él elige (CAMBIAR_ALERTA).
+    No envía mensaje WhatsApp: setea last_notified_alert en cache.
+    Exclusivo para managers que NO son creators.
+
+    Si cache existe → PATCH last_notified_alert.
+    Si NO existe → CREA entry con metadata mínima + last_notified_alert. Necesario
+    para que el próximo mensaje del manager (ej: tap "Ver detalles") sea procesado
+    por _process_save_number en lugar de _process_new_number_sync. Sin info_alert
+    ni alert_active — manager sigue requiriendo CAMBIAR_ALERTA para tomar foco.
     """
 
     def can_receive(self, user: "AlertUser") -> bool:
         return user.is_manager and not user.is_creator
 
     def send(self, user: "AlertUser", svc, alert_data: Dict, logger=None) -> None:
-        if not user.cache_exists(svc):
-            return
+        last_notified = {
+            "alert_id": user.alert_id,
+            "sede": alert_data.get("sede", ""),
+        }
+
+        empresa_id = alert_data.get("empresa_id")
+        if not empresa_id:
+            empresa_data = alert_data.get("empresa")
+            if isinstance(empresa_data, dict):
+                empresa_id = empresa_data.get("id") or empresa_data.get("_id")
+        empresa_nombre = alert_data.get("empresa_nombre", "")
+
         try:
-            svc.update_number_cache(
+            if user.cache_exists(svc):
+                svc.update_number_cache(
+                    phone=user.phone,
+                    data={"last_notified_alert": last_notified},
+                )
+                return
+
+            # Crear entry mínima para que próximo mensaje vaya por _process_save_number
+            new_data = {
+                "id": user.usuario_id,
+                "empresa": empresa_nombre,
+                "last_notified_alert": last_notified,
+            }
+            if user.rol:
+                new_data["rol"] = {
+                    "nombre": user.rol.get("nombre") or user.rol.get("name", ""),
+                    "is_creator": bool(user.rol.get("is_creator")),
+                    "is_alert_manager": bool(user.rol.get("is_alert_manager")),
+                }
+            if empresa_id:
+                new_data["empresa_id"] = empresa_id
+
+            svc.add_number_to_cache(
                 phone=user.phone,
-                data={
-                    "last_notified_alert": {
-                        "alert_id": user.alert_id,
-                        "sede": alert_data.get("sede", ""),
-                    }
-                },
+                name=user.nombre or "",
+                data=new_data,
+                empresa_id=empresa_id,
             )
         except Exception as ex:
             if logger:
