@@ -41,7 +41,6 @@ class AlertUser:
         alert_id: str,
         cache_entry: Optional[Dict] = None,
         usuario_id: str = "",
-        is_in_sede: bool = False,
     ):
         self.phone = phone
         self.nombre = nombre
@@ -49,7 +48,6 @@ class AlertUser:
         self.alert_id = str(alert_id) if alert_id else ""
         self._cache = cache_entry or {}
         self.usuario_id = usuario_id
-        self.is_in_sede = is_in_sede
 
     # --- Identidad ---
     @property
@@ -59,6 +57,19 @@ class AlertUser:
     @property
     def is_manager(self) -> bool:
         return False
+
+    # --- Sede membership ---
+    @staticmethod
+    def _norm_phone(p: str) -> str:
+        return (p or "").strip().lstrip("+")
+
+    def is_in_sede_for_alert(self, alert_data: Dict) -> bool:
+        """True si el teléfono aparece en numeros_telefonicos de la alerta."""
+        norm = self._norm_phone(self.phone)
+        return any(
+            self._norm_phone(u.get("numero", "")) == norm
+            for u in (alert_data.get("numeros_telefonicos") or [])
+        )
 
     # --- Cache helpers ---
     def is_focused_on(self, alert_id: str) -> bool:
@@ -141,6 +152,14 @@ class ManagerUser(AlertUser):
     def is_manager(self) -> bool:
         return True
 
+    def is_in_sede_for_alert(self, alert_data: Dict) -> bool:
+        """En sede si aparece en numeros_telefonicos O si su sede de cache coincide con la de la alerta."""
+        if super().is_in_sede_for_alert(alert_data):
+            return True
+        manager_sede = (self._cache.get("sede") or "").strip()
+        alert_sede = (alert_data.get("sede") or "").strip()
+        return bool(manager_sede and alert_sede and manager_sede == alert_sede)
+
     def on_alert_broadcast(self, cache_svc) -> None:
         # PATCH de last_notified_alert lo hace ManagerLastNotifiedPatch.send
         # durante el fanout. Aquí no se toca el cache.
@@ -181,6 +200,13 @@ class DualRoleUser(AlertUser):
     def is_manager(self) -> bool:
         return True
 
+    def is_in_sede_for_alert(self, alert_data: Dict) -> bool:
+        if super().is_in_sede_for_alert(alert_data):
+            return True
+        manager_sede = (self._cache.get("sede") or "").strip()
+        alert_sede = (alert_data.get("sede") or "").strip()
+        return bool(manager_sede and alert_sede and manager_sede == alert_sede)
+
     def on_alert_broadcast(self, cache_svc) -> None:
         # Como CreatorUser: ya tiene cache activo, no tocar.
         pass
@@ -218,7 +244,6 @@ def make_alert_user(
     creator_phone: str,
     alert_id: str,
     cache_svc=None,
-    is_in_sede: bool = False,
 ) -> AlertUser:
     """
     Construye el AlertUser correcto a partir del dict de usuario.
@@ -229,7 +254,6 @@ def make_alert_user(
                        Si es '' o None → ningún usuario es creator.
         alert_id: ID de la alerta en contexto.
         cache_svc: WhatsAppService (para leer snapshot del cache).
-        is_in_sede: True si el número aparece en numeros_telefonicos de la alerta.
     """
     phone = (usuario_dict.get("numero") or "").strip()
     nombre = usuario_dict.get("nombre", "")
@@ -264,7 +288,6 @@ def make_alert_user(
         alert_id=alert_id,
         cache_entry=cache_entry,
         usuario_id=usuario_id,
-        is_in_sede=is_in_sede,
     )
 
 

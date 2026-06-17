@@ -1281,16 +1281,22 @@ class WebSocketMessageHandler:
             )
             return
 
-        # Determinar membresía de sede (normalizar "+" para evitar mismatch de formato)
+        # Construir AlertUser para delegar lógica de membresía de sede (OOP)
+        user_obj = make_whatsapp_user(cached_info or {}, alert_id=alert_id)
+        is_in_sede = user_obj.is_in_sede_for_alert(data_alert)
+
+        # data_user: entrada de numeros_telefonicos para _send_create_active_user
+        # Si manager no está en numeros_telefonicos pero sí en su sede → entrada sintética
         def _norm(p: str) -> str:
             return (p or "").strip().lstrip("+")
 
         norm_number = _norm(number)
         data_user = [u for u in (data_alert.get("numeros_telefonicos") or [])
                      if _norm(u.get("numero", "")) == norm_number]
-        is_in_sede = bool(data_user)
+        if not data_user and is_in_sede:
+            data_user = [{"numero": number, "nombre": user}]
 
-        # Mapa (siempre, si hay url_maps)
+        # Mapa siempre (si hay url_maps)
         ubicacion = data_alert.get("ubicacion", {})
         if isinstance(ubicacion, dict) and ubicacion.get("url_maps"):
             self._send_location_personalized_message(
