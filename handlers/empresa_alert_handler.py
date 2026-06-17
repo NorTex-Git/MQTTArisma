@@ -185,6 +185,15 @@ class EmpresaAlertHandler:
                     telefono = mgr.get("numero", "")
                     if not telefono:
                         continue
+                    # Guard: skip si manager no existe aún en cache (nunca interactuó con bot).
+                    # Sin guard, PATCH → 404 ruidoso. Cache se crea cuando el manager mande un mensaje.
+                    try:
+                        existing = self.whatsapp_service.get_number_from_cache(phone=telefono)
+                    except Exception:
+                        existing = None
+                    if not existing:
+                        self.logger.debug(f"ℹ️ Manager {telefono} aún no registrado en cache, skip patch")
+                        continue
                     role_info = mgr.get("rol") if isinstance(mgr, dict) else None
                     patch_data = {
                         "empresa": empresa_nombre,
