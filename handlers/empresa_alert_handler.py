@@ -1030,11 +1030,14 @@ class EmpresaAlertHandler:
                         phone = r.get("phone")
                         if not phone:
                             continue
-                        # Top-level fields para que backend/front no tengan que parsear payload
+                        # Backend espera user_name + user_id (no nombre/usuario_id).
+                        # Mantenemos también nombre/usuario_id para retrocompat con otros readers.
                         nombre = r.get("name") or r.get("nombre") or ""
                         usuario_id = r.get("usuario_id") or r.get("id") or ""
                         payload = {
                             "phone": phone,
+                            "user_name": nombre,       # Lo que backend lee
+                            "user_id": usuario_id,     # Lo que backend lee
                             "name": nombre,
                             "nombre": nombre,
                             "usuario_id": usuario_id,
