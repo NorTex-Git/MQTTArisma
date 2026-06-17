@@ -80,17 +80,19 @@ class MapMessage(AlertMessageType):
 class ManagerLastNotifiedPatch(AlertMessageType):
     """
     No envía mensaje WhatsApp: setea last_notified_alert en cache.
-    Exclusivo para managers que NO son creators.
+    Aplica a TODOS los no-creators (regulares + managers). Es la única fuente
+    confiable de "última alerta notificada al usuario" — info_alert.alert_id
+    queda atado al foco activo del usuario, que NO se cambia automáticamente
+    al llegar nueva alerta (el usuario decide tocando "Estoy disponible").
 
     Si cache existe → PATCH last_notified_alert.
     Si NO existe → CREA entry con metadata mínima + last_notified_alert. Necesario
-    para que el próximo mensaje del manager (ej: tap "Ver detalles") sea procesado
-    por _process_save_number en lugar de _process_new_number_sync. Sin info_alert
-    ni alert_active — manager sigue requiriendo CAMBIAR_ALERTA para tomar foco.
+    para que el próximo mensaje (tap "Ver detalles") sea procesado por
+    _process_save_number en lugar de _process_new_number_sync.
     """
 
     def can_receive(self, user: "AlertUser") -> bool:
-        return user.is_manager and not user.is_creator
+        return not user.is_creator
 
     def send(self, user: "AlertUser", svc, alert_data: Dict, logger=None) -> None:
         last_notified = {

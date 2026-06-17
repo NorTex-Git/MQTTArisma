@@ -443,10 +443,12 @@ class WebSocketMessageHandler:
         )
         if self._is_ver_detalles_tap(entry, type_message):
             self.logger.info("✅ Ver detalles tap detectado → _send_alert_details_to_user")
-            # Prioridad: foco activo (info_alert), fallback last_notified (manager observador)
-            target_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")
+            # Prioridad: last_notified_alert (la más reciente notificada al usuario)
+            # sobre info_alert (foco activo, puede ser una alerta vieja). El tap viene
+            # del template de la última alerta notificada, así que apuntamos a ESA.
+            target_alert_id = (exist_alert.get("last_notified_alert") or {}).get("alert_id")
             if not target_alert_id:
-                target_alert_id = (exist_alert.get("last_notified_alert") or {}).get("alert_id")
+                target_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")
             self._send_alert_details_to_user(
                 number=number,
                 user=user,
@@ -472,18 +474,33 @@ class WebSocketMessageHandler:
                     )
                     #esto valida si es para activacion de un usuario
                     if type_button == "Activar_User":
-                        # Disponibilidad ES POR ALERTA en backend (no global en cache).
-                        # Siempre informar backend — él es source of truth per-alerta.
-                        # Cache.disponible es solo hint local, puede estar stale de otra alerta.
+                        # CRÍTICO: el botón vino del template/Ver detalles de la última alerta
+                        # notificada al usuario, NO necesariamente la que tiene en foco.
+                        # Priorizar last_notified_alert.alert_id sobre info_alert.alert_id.
+                        target_alert_id = (
+                            (exist_alert.get("last_notified_alert") or {}).get("alert_id")
+                            or id_alert
+                        )
+                        self.logger.info(
+                            f"🟢 Activar_User: target_alert={target_alert_id} "
+                            f"(last_notified={(exist_alert.get('last_notified_alert') or {}).get('alert_id')}, "
+                            f"info_alert={id_alert})"
+                        )
+                        # Disponibilidad es POR ALERTA en backend. Siempre informar.
                         self.backend_client.update_user_status(
-                            alert_id=id_alert,
+                            alert_id=target_alert_id,
                             usuario_id=id_user,
                             disponible=True,
                         )
-                        # Cache update: refleja que está disponible para LA ALERTA EN FOCO actual
+                        # Cache: actualizar info_alert al nuevo foco + disponible=True.
+                        # Esto es elección del usuario (tocó disponible → se enfoca).
                         self.whatsapp_service.update_number_cache(
                             phone=number,
-                            data={"disponible": True},
+                            data={
+                                "disponible": True,
+                                "alert_active": True,
+                                "info_alert": {"alert_id": target_alert_id},
+                            },
                             empresa_id=cached_info.get("data", {}).get("empresa_id")
                         )
                         self.whatsapp_service.send_individual_message(
@@ -837,14 +854,22 @@ class WebSocketMessageHandler:
         if is_button:
             button_id = is_button.get("id", "")
             if button_id == "Activar_User":
+                # PRIORIDAD: last_notified_alert (la más reciente notificada via template/Ver detalles)
+                # > info_alert (foco anterior, posiblemente stale de alerta vieja)
+                # > lookup backend (fallback si cache no tiene nada)
                 target_alert_id = (
-                    (exist_alert.get("info_alert") or {}).get("alert_id")
-                    or (exist_alert.get("last_notified_alert") or {}).get("alert_id")
+                    (exist_alert.get("last_notified_alert") or {}).get("alert_id")
+                    or (exist_alert.get("info_alert") or {}).get("alert_id")
                     or self._find_active_alert_for_user(
                         telefono=number,
                         usuario_id=exist_alert.get("id", ""),
                         user_sede=exist_alert.get("sede", ""),
                     )
+                )
+                self.logger.info(
+                    f"🟢 Activar_User defensive: target={target_alert_id} "
+                    f"(last_notified={(exist_alert.get('last_notified_alert') or {}).get('alert_id')}, "
+                    f"info_alert={(exist_alert.get('info_alert') or {}).get('alert_id')})"
                 )
                 if not target_alert_id:
                     self.whatsapp_service.send_individual_message(
