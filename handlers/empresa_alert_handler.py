@@ -164,9 +164,16 @@ class EmpresaAlertHandler:
                 # Ciclo de vida del cache
                 user.on_alert_broadcast(self.whatsapp_service)
 
-            # Backend log de plantillas (no creators) — preserva trazabilidad is_template
+            # Backend log de plantillas (no creators) — incluye nombre + usuario_id
+            # para que el front pueda mostrar "Contactos Notificados" con datos completos.
             template_logged = [
-                {"phone": u.phone, "template_name": "crear_alerta"}
+                {
+                    "phone": u.phone,
+                    "name": u.nombre,
+                    "nombre": u.nombre,
+                    "usuario_id": u.usuario_id,
+                    "template_name": "crear_alerta",
+                }
                 for u in alert_users if not u.is_creator and u.phone
             ]
             if template_logged:
@@ -1023,8 +1030,14 @@ class EmpresaAlertHandler:
                         phone = r.get("phone")
                         if not phone:
                             continue
+                        # Top-level fields para que backend/front no tengan que parsear payload
+                        nombre = r.get("name") or r.get("nombre") or ""
+                        usuario_id = r.get("usuario_id") or r.get("id") or ""
                         payload = {
                             "phone": phone,
+                            "name": nombre,
+                            "nombre": nombre,
+                            "usuario_id": usuario_id,
                             "direction": "out",
                             "type": "template",
                             "body": summary_body,
@@ -1032,8 +1045,9 @@ class EmpresaAlertHandler:
                             "is_template": True
                         }
                         self.backend_client.log_alert_message(alert_id=alert_id_str, payload=payload)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    if self.logger:
+                        self.logger.warning(f"⚠️ _log_template_sends fire error: {ex}")
 
             threading.Thread(target=_fire, daemon=True).start()
         except Exception as exc:
