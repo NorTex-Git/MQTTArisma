@@ -503,14 +503,15 @@ class WebSocketMessageHandler:
                             
                             # Verificar si la desactivación fue exitosa
                             if response_desactivate and response_desactivate.get('success', False):
-                                # Verificar que tenemos los datos necesarios
-                                list_users = response_desactivate.get("numeros_telefonicos", [])
+                                # Lista del response es opcional — cleanup robusto usa
+                                # find_numbers_by_alert(alert_id) como fuente primaria.
+                                list_users = response_desactivate.get("numeros_telefonicos", []) or []
                                 if not list_users:
-                                    self.logger.warning("⚠️ No se encontraron usuarios en la respuesta de desactivación")
-                                    self.whatsapp_service.send_individual_message(phone=number, message="Alarma desactivada exitosamente")
-                                    return  # Salir temprano para evitar más procesamiento
-                                
-                                # Limpiar cache de usuarios
+                                    self.logger.info(
+                                        "ℹ️ Backend deactivate sin lista — usando find_numbers_by_alert para cleanup"
+                                    )
+
+                                # Limpiar cache de TODOS los teléfonos con foco en esta alerta
                                 try:
                                     self._clean_bulk_cache_alert(list_user=list_users, alert_id=id_alert)
                                 except Exception as cache_error:
@@ -527,9 +528,14 @@ class WebSocketMessageHandler:
                                 except Exception as mgr_error:
                                     self.logger.error(f"❌ Error limpiando managers: {mgr_error}")
                                 
-                                # Enviar mensajes a otros usuarios
+                                # Enviar mensajes a otros usuarios (normaliza y skip si sin lista)
                                 try:
-                                    list_not_you = [u for u in list_users if u["numero"] != number]
+                                    _norm_p = lambda p: (p or "").strip().lstrip("+")
+                                    norm_self = _norm_p(number)
+                                    list_not_you = [
+                                        u for u in list_users
+                                        if isinstance(u, dict) and _norm_p(u.get("numero", "")) != norm_self
+                                    ]
                                     if list_not_you:
                                         self._send_bulk_team(list_users=list_not_you,
                                                              name_made=user,type_message="text",
