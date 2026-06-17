@@ -971,11 +971,15 @@ class WebSocketMessageHandler:
     def _clean_bulk_cache_alert(self, list_user: list = None, alert_id: str = "") -> None:
         """Limpia campos de alerta del cache para TODOS los teléfonos con foco en esta alerta.
 
-        Fuente principal: find_numbers_by_alert(alert_id) — consulta directa al backend WhatsApp,
-        cubre regulares + managers + dual-role. Fallback: list_user (compat con llamadas viejas).
+        Fuentes (union):
+        - find_numbers_by_alert(alert_id): query directo del backend, cubre cualquier
+          phone con info_alert.alert_id == este (regular + manager + dual-role).
+        - list_user: defensive, soporta entrega parcial del response del deactivate.
 
-        Union de ambas fuentes elimina dependencia de que backend deactivate response
-        traiga la lista completa.
+        Usa update_number_cache (individual) en lugar de bulk_update_numbers porque
+        bulk_update setea __DELETE__ como string literal en vez de remover el campo —
+        deja el cache con "alert_active": "__DELETE__" lo que el handler interpreta
+        como alerta activa, y la conversación nunca vuelve al estado default.
         """
         try:
             if not self.whatsapp_service:
@@ -990,7 +994,6 @@ class WebSocketMessageHandler:
 
             phones_set: set = set()
 
-            # Fuente 1: query directo por alert_id (cubre todos los caches con foco)
             if alert_id:
                 try:
                     focused = self.whatsapp_service.find_numbers_by_alert(
@@ -1003,7 +1006,6 @@ class WebSocketMessageHandler:
                 except Exception as ex:
                     self.logger.warning(f"⚠️ find_numbers_by_alert falló para {alert_id}: {ex}")
 
-            # Fuente 2: list_user pasado por el caller (defensive, soporta entrega parcial)
             if list_user:
                 for n in list_user:
                     if not isinstance(n, dict):
@@ -1016,9 +1018,12 @@ class WebSocketMessageHandler:
                 self.logger.info(f"ℹ️ Sin teléfonos para limpiar cache de alerta {alert_id}")
                 return
 
-            list_phones = list(phones_set)
-            self.logger.info(f"🧹 Limpiando cache de alerta {alert_id} en {len(list_phones)} teléfonos")
-            self.whatsapp_service.bulk_update_numbers(phones=list_phones, data=patch_data)
+            self.logger.info(f"🧹 Limpiando cache de alerta {alert_id} en {len(phones_set)} teléfonos")
+            for phone in phones_set:
+                try:
+                    self.whatsapp_service.update_number_cache(phone=phone, data=patch_data)
+                except Exception as ex:
+                    self.logger.warning(f"⚠️ No se pudo limpiar cache {phone}: {ex}")
         except Exception as ex:
             self.logger.error(f"Error en _clean_bulk_cache_alert {ex}")
     def _desactivate_alarm_to_back(self,id_alert, cached:Dict) ->Optional[Dict]:

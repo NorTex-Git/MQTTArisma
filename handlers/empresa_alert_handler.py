@@ -377,9 +377,14 @@ class EmpresaAlertHandler:
                 self.logger.warning(f"⚠️ Sin teléfonos para limpiar cache de alerta {alert_id}")
                 return False
 
-            list_phones = list(phones_set)
-            self.whatsapp_service.bulk_update_numbers(phones=list_phones, data=data_to_delete)
-            self.logger.info(f"✅ Caché limpiado para {len(list_phones)} teléfonos (alerta {alert_id})")
+            # Individual update por cada phone: bulk_update no honra __DELETE__
+            # (lo setea como string literal, conversación queda "activa" en el cache).
+            self.logger.info(f"🧹 Limpiando cache de alerta {alert_id} en {len(phones_set)} teléfonos")
+            for phone in phones_set:
+                try:
+                    self.whatsapp_service.update_number_cache(phone=phone, data=data_to_delete)
+                except Exception as ex:
+                    self.logger.warning(f"⚠️ No se pudo limpiar cache {phone}: {ex}")
             return True
 
         except Exception as e:
