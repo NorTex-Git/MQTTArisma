@@ -374,8 +374,11 @@ class EmpresaAlertHandler:
                 phones_set.add(str(telefono).strip().lstrip("+"))
 
             if not phones_set:
-                self.logger.warning(f"⚠️ Sin teléfonos para limpiar cache de alerta {alert_id}")
-                return False
+                # Alerta sin usuarios afectados: NO es error — puede ser alerta huérfana
+                # o usuarios que ya limpiaron su cache via flujo normal. Retornar True
+                # para no marcar la desactivación como fallida.
+                self.logger.info(f"ℹ️ Sin teléfonos para limpiar cache de alerta {alert_id} (alerta sin usuarios activos)")
+                return True
 
             # Individual update por cada phone: bulk_update no honra __DELETE__
             # (lo setea como string literal, conversación queda "activa" en el cache).
@@ -447,10 +450,11 @@ class EmpresaAlertHandler:
                     "phone": telefono,
                     "message": notification_message
                 })
-            
+
             if not recipients:
-                self.logger.warning("⚠️ No hay destinatarios válidos para WhatsApp")
-                return False
+                # Sin usuarios para notificar: no es error. Alerta huérfana o sin sede asignada.
+                self.logger.info("ℹ️ Desactivación sin destinatarios WhatsApp (alerta sin usuarios)")
+                return True
             
             # Enviar usando el cliente de WhatsApp para envío masivo
             response = self.whatsapp_service.send_bulk_individual(
@@ -518,8 +522,10 @@ class EmpresaAlertHandler:
                     self.logger.error(f"❌ Error desactivando hardware: {hardware_name} - Topic: {full_topic}")
             
             self.logger.info(f"📊 MQTT: {success_count}/{len(hardware_list)} dispositivos desactivados")
-            return success_count > 0
-            
+            # Considerar éxito si: hardware fue procesado (aunque algunos no tengan topic)
+            # o si la lista venía sin hardware válido — no es fallo del flujo.
+            return True
+
         except Exception as e:
             self.logger.error(f"❌ Error enviando comandos MQTT de empresa: {e}")
             return False

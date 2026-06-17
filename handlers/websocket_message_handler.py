@@ -2188,48 +2188,80 @@ class WebSocketMessageHandler:
             self.logger.error(f"❌ Error enviando notificación de alarma: {e}")
             return False
     def _send_create_active_user(self, list_users: list, alert: Dict, data_user: Dict = {}) -> bool:
-        """Crear notificación de alarma por WhatsApp"""
-        if not self.whatsapp_service or not self.backend_client:
-            self.logger.warning("⚠️ WhatsApp service o backend client no disponibles")
+        """Crear notificación de alarma por WhatsApp con botón 'Estoy disponible'.
+        Defensivo: todos los campos opcionales con fallback. Si falta image_alert,
+        usa header de texto. Si list_users vacío, salta con warning. NUNCA debe
+        fallar silente — el botón es crítico para la UX."""
+        if not self.whatsapp_service:
+            self.logger.error("❌ _send_create_active_user: whatsapp_service no disponible")
             return False
-            
+        if not list_users:
+            self.logger.warning("⚠️ _send_create_active_user: list_users vacío, nada que enviar")
+            return False
+
+        # Extraer todos los campos con fallback (nunca KeyError)
+        data_create = alert.get("activacion_alerta") or {}
+        creador_nombre = data_create.get("nombre") or alert.get("empresa_nombre") or "el equipo"
+        image = alert.get("image_alert") or ""
+        alert_name = alert.get("nombre_alerta") or alert.get("tipo_alerta") or "Alerta"
+        cached_data = (data_user or {}).get("data") or {}
+        empresa = (
+            cached_data.get("empresa")
+            or alert.get("empresa_nombre")
+            or alert.get("empresa")
+            or "la empresa"
+        )
+        if isinstance(empresa, dict):
+            empresa = empresa.get("nombre") or empresa.get("name") or "la empresa"
+
+        footer = f"Creada por {creador_nombre}\nEquipo RESCUE"
+        recipients = []
+        for item in list_users:
+            phone = item.get("numero") or item.get("phone") or ""
+            if not phone:
+                self.logger.warning(f"⚠️ _send_create_active_user: usuario sin numero: {item}")
+                continue
+            nombre_raw = item.get("nombre") or item.get("name") or "Usuario"
+            primer_nombre = str(nombre_raw).split()[0].upper() if str(nombre_raw).strip() else "USUARIO"
+            body_text = f"¡Hola {primer_nombre}!.\nAlerta de {alert_name} en {empresa}."
+            recipients.append({"phone": phone, "body_text": body_text})
+
+        if not recipients:
+            self.logger.warning("⚠️ _send_create_active_user: 0 destinatarios válidos tras filtrar")
+            return False
+
+        buttons = [{"id": "Activar_User", "title": "Estoy disponible"}]
+
         try:
-            data_create = alert.get("activacion_alerta",{})
-            image = alert["image_alert"]
-            alert_name = alert["nombre_alerta"]
-            empresa = data_user["data"]["empresa"]
-            recipients = []
-            footer = f"Creada por {data_create['nombre']}\nEquipo RESCUE"
-            
-            for item in list_users:
-                nombre = str(item["nombre"])
-                body_text = f"¡Hola {nombre.split()[0].upper()}!.\nAlerta de {alert_name} en {empresa}."
-                data = {
-                    "phone": item.get("numero", ""),
-                    "body_text": body_text
-                }
-                recipients.append(data)
-                
-            buttons = [
-                {
-                    "id": "Activar_User",
-                    "title": "Estoy disponible"
-                }
-            ]
-            
-            self.whatsapp_service.send_bulk_button_message(
-                header_type="image",
-                header_content=image,
-                buttons=buttons,
-                footer_text=footer,
-                recipients=recipients,
-                use_queue=True
+            if image:
+                result = self.whatsapp_service.send_bulk_button_message(
+                    header_type="image",
+                    header_content=image,
+                    buttons=buttons,
+                    footer_text=footer,
+                    recipients=recipients,
+                    use_queue=True,
+                )
+            else:
+                # Fallback texto: si no hay image_alert, header textual
+                result = self.whatsapp_service.send_bulk_button_message(
+                    header_type="text",
+                    header_content=f"ALERTA {str(alert_name).upper()}",
+                    buttons=buttons,
+                    footer_text=footer,
+                    recipients=recipients,
+                    use_queue=True,
+                )
+            self.logger.info(
+                f"✅ Botón 'Estoy disponible' enviado a {len(recipients)} usuarios "
+                f"(header={'image' if image else 'text'}, alert={alert_name})"
             )
-            self.logger.info(f"✅notificacion de activacion de usuario enviada a {len(recipients)} usuarios")
-            return True
-            
+            return bool(result) if result is not None else True
         except Exception as e:
-            self.logger.error(f"❌ Error enviando notificación de activacion de usuario: {e}")
+            self.logger.error(
+                f"❌ _send_create_active_user falló al enviar bulk_button_message: {e} "
+                f"| recipients={len(recipients)}, image={'sí' if image else 'no'}"
+            )
             return False
    
     def _intermediate_to_mqtt(self,topics,alert) -> None:
