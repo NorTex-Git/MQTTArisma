@@ -18,7 +18,11 @@ from models.alert_message_type import BROADCAST_MESSAGE_TYPES
 
 class EmpresaAlertHandler:
     """Handler específico para alertas desactivadas por empresa"""
-    
+
+    # TTL para dedup de activaciones: mismo alert_id no se procesa 2 veces en este intervalo.
+    # Backend dispara WS "create_empresa_alert" Y HTTP trigger_fanout → sin dedup llega 2x.
+    _ACTIVATION_DEDUP_TTL_SECONDS = 60
+
     def __init__(self, whatsapp_service=None, config=None, enable_mqtt_publisher=True, backend_client=None):
         self.whatsapp_service = whatsapp_service
         self.config = config
@@ -28,6 +32,11 @@ class EmpresaAlertHandler:
         # Estadísticas específicas
         self.processed_count = 0
         self.error_count = 0
+
+        # Dedup state: {alert_id: timestamp_procesado}
+        import threading
+        self._activation_dedup: Dict[str, float] = {}
+        self._dedup_lock = threading.Lock()
         
         # Configurar pattern topic igual que en websocket handler
         self.pattern_topic = config.mqtt.topic if config else "empresas"
@@ -80,16 +89,25 @@ class EmpresaAlertHandler:
         """Procesar activación de alerta por empresa (similar a MQTT handler)"""
         try:
             self.logger.info("🏢 Procesando activación de alerta por empresa")
-            
+
             # Validar estructura del mensaje
             if not self._validate_empresa_activation_message(message_data):
                 self.logger.error("❌ Estructura de mensaje inválida para activación de empresa")
                 return False
-            
+
             # Extraer datos principales de la estructura del backend
             alert_data = message_data.get("alert", {})
             alert_managers_raw = message_data.get("alert_managers", []) or []
             alert_id = alert_data.get("_id", "N/A")
+
+            # Dedup: si esta alert_id ya se procesó hace menos de TTL segundos, skip.
+            # Evita fanout duplicado cuando backend dispara vía WebSocket y HTTP a la vez.
+            if not self._claim_activation(str(alert_id)):
+                self.logger.warning(
+                    f"⏭️ Activación duplicada ignorada (alert_id={alert_id}) — "
+                    f"ya procesada hace menos de {self._ACTIVATION_DEDUP_TTL_SECONDS}s"
+                )
+                return True
             alert_name = alert_data.get("nombre_alerta") or alert_data.get("tipo_alerta", "Alerta")
             empresa_nombre = alert_data.get("empresa_nombre", "La Empresa")
             sede = alert_data.get("sede", "")
@@ -969,6 +987,26 @@ class EmpresaAlertHandler:
                     self.logger.error(f"❌ Error limpiando foco manager {manager_phone}: {ex}")
         except Exception as ex:
             self.logger.error(f"Error en _clean_focused_managers_after_deactivation: {ex}")
+
+    def _claim_activation(self, alert_id: str) -> bool:
+        """Reserva una activación de alert_id. Retorna True si es la primera vez en TTL,
+        False si ya se procesó recientemente (duplicado a ignorar). Thread-safe.
+        Limpia entradas viejas oportunísticamente para no crecer indefinidamente."""
+        if not alert_id or alert_id == "N/A":
+            return True  # Sin id, no se puede dedup → procesar
+        import time
+        now = time.time()
+        ttl = self._ACTIVATION_DEDUP_TTL_SECONDS
+        with self._dedup_lock:
+            # GC oportunista
+            expired = [k for k, t in self._activation_dedup.items() if now - t > ttl]
+            for k in expired:
+                self._activation_dedup.pop(k, None)
+            last = self._activation_dedup.get(alert_id)
+            if last is not None and (now - last) <= ttl:
+                return False
+            self._activation_dedup[alert_id] = now
+            return True
 
     def _log_template_sends(self, alert_id, template_name: str, recipients: List[Dict], summary_body: str) -> None:
         """Fire-and-forget: registra envíos de plantilla en backend (is_template=True)"""
