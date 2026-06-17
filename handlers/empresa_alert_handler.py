@@ -702,32 +702,33 @@ class EmpresaAlertHandler:
             
             alert_id = alert_data.get("_id", "")
             empresa_nombre = alert_data.get("empresa_nombre", "")
+            sede_alerta = alert_data.get("sede", "")
             empresa_id = alert_data.get("empresa_id")
 
             if not empresa_id:
                 empresa_data = alert_data.get("empresa")
                 if isinstance(empresa_data, dict):
                     empresa_id = empresa_data.get("id") or empresa_data.get("_id")
-            
+
             success_count = 0
-            
+
             for usuario in usuarios:
-                telefono = usuario.get("numero", "")  # ✅ CAMBIO: usar 'numero' en lugar de 'telefono'
+                telefono = usuario.get("numero", "")
                 nombre = usuario.get("nombre", "")
                 user_id = usuario.get("usuario_id", "")
-                
-                # Limpiar formato del teléfono si es necesario
+
                 if telefono.startswith("+"):
-                    telefono = telefono[1:]  # Remover el +
-                
+                    telefono = telefono[1:]
+
                 if not telefono:
                     continue
-                
+
                 cache_data = {
                     "alert_active": True,
-                    "disponible": usuario.get("disponible", False),  # ✅ CAMBIO: False por defecto como en MQTT handler
+                    "disponible": usuario.get("disponible", False),
                     "embarcado": usuario.get("embarcado", False),
                     "empresa": empresa_nombre,
+                    "sede": sede_alerta,
                     "id": user_id,
                     "info_alert": {
                         "alert_id": alert_id

@@ -119,6 +119,8 @@ class ManagerLastNotifiedPatch(AlertMessageType):
                 "empresa": empresa_nombre,
                 "last_notified_alert": last_notified,
             }
+            if user.home_sede:
+                new_data["sede"] = user.home_sede
             if user.rol:
                 new_data["rol"] = {
                     "nombre": user.rol.get("nombre") or user.rol.get("name", ""),

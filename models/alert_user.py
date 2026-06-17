@@ -42,6 +42,7 @@ class AlertUser:
         cache_entry: Optional[Dict] = None,
         usuario_id: str = "",
         cache_exists_flag: Optional[bool] = None,
+        home_sede: str = "",
     ):
         self.phone = phone
         self.nombre = nombre
@@ -53,6 +54,12 @@ class AlertUser:
         # Si None, fallback a heurística (cache_entry truthy).
         self._cache_exists_flag = (
             cache_exists_flag if cache_exists_flag is not None else bool(cache_entry)
+        )
+        # home_sede: sede a la que pertenece el usuario (su sede de origen).
+        # Cae a cache si está, sino al param explícito.
+        self.home_sede = (
+            (self._cache.get("sede") or "").strip()
+            or (home_sede or "").strip()
         )
 
     # --- Identidad ---
@@ -70,7 +77,13 @@ class AlertUser:
         return (p or "").strip().lstrip("+")
 
     def is_in_sede_for_alert(self, alert_data: Dict) -> bool:
-        """True si el teléfono aparece en numeros_telefonicos de la alerta."""
+        """True si el usuario pertenece a la sede de la alerta.
+        Comparación principal: home_sede (de cache) == alert.sede.
+        Fallback: teléfono aparece en numeros_telefonicos (cubre casos donde
+        cache.sede no estaba poblada todavía)."""
+        alert_sede = (alert_data.get("sede") or "").strip()
+        if alert_sede and self.home_sede and alert_sede == self.home_sede:
+            return True
         norm = self._norm_phone(self.phone)
         return any(
             self._norm_phone(u.get("numero", "")) == norm
@@ -156,14 +169,6 @@ class ManagerUser(AlertUser):
     def is_manager(self) -> bool:
         return True
 
-    def is_in_sede_for_alert(self, alert_data: Dict) -> bool:
-        """En sede si aparece en numeros_telefonicos O si su sede de cache coincide con la de la alerta."""
-        if super().is_in_sede_for_alert(alert_data):
-            return True
-        manager_sede = (self._cache.get("sede") or "").strip()
-        alert_sede = (alert_data.get("sede") or "").strip()
-        return bool(manager_sede and alert_sede and manager_sede == alert_sede)
-
     def on_alert_broadcast(self, cache_svc) -> None:
         # PATCH de last_notified_alert lo hace ManagerLastNotifiedPatch.send
         # durante el fanout. Aquí no se toca el cache.
@@ -203,13 +208,6 @@ class DualRoleUser(AlertUser):
     @property
     def is_manager(self) -> bool:
         return True
-
-    def is_in_sede_for_alert(self, alert_data: Dict) -> bool:
-        if super().is_in_sede_for_alert(alert_data):
-            return True
-        manager_sede = (self._cache.get("sede") or "").strip()
-        alert_sede = (alert_data.get("sede") or "").strip()
-        return bool(manager_sede and alert_sede and manager_sede == alert_sede)
 
     def on_alert_broadcast(self, cache_svc) -> None:
         # Como CreatorUser: ya tiene cache activo, no tocar.
@@ -266,6 +264,13 @@ def make_alert_user(
         rol = {}
     usuario_id = str(usuario_dict.get("usuario_id") or usuario_dict.get("id") or "")
 
+    # Sede del usuario: puede venir como string o dict
+    sede_raw = usuario_dict.get("sede", "")
+    if isinstance(sede_raw, dict):
+        home_sede = (sede_raw.get("nombre") or sede_raw.get("name") or "").strip()
+    else:
+        home_sede = (sede_raw or "").strip()
+
     is_creator_flag = bool(phone and creator_phone and phone == creator_phone)
     is_manager_flag = bool(rol.get("is_alert_manager"))
 
@@ -295,6 +300,7 @@ def make_alert_user(
         cache_entry=cache_entry,
         usuario_id=usuario_id,
         cache_exists_flag=cache_exists_flag,
+        home_sede=home_sede,
     )
 
 

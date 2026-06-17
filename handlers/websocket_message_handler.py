@@ -1056,6 +1056,36 @@ class WebSocketMessageHandler:
                 
         #         return True
         
+        # Si la primera interacción del usuario es el tap "Ver detalles" de la plantilla,
+        # responder con mapa + botón disponible (si pertenece a la sede de alguna alerta activa)
+        # antes de los fallbacks de menú.
+        if entry and self._is_ver_detalles_tap(entry, entry.get("type", "")):
+            target_alert_id = self._find_active_alert_for_user(
+                telefono=verify_number["telefono"],
+                usuario_id=verify_number.get("id", ""),
+                user_sede=sede_nombre,
+            )
+            if target_alert_id:
+                synthetic_cached_info = {
+                    "phone": verify_number["telefono"],
+                    "name": usuario,
+                    "data": {
+                        "id": verify_number.get("id"),
+                        "empresa": empresa_nombre,
+                        "sede": sede_nombre,
+                        "rol": normalized_role,
+                        **({"empresa_id": empresa_id} if empresa_id else {}),
+                    },
+                }
+                self._send_alert_details_to_user(
+                    number=number,
+                    user=usuario,
+                    alert_id=target_alert_id,
+                    user_lookup_id=verify_number.get("id", ""),
+                    cached_info=synthetic_cached_info,
+                )
+                return True
+
         # Usuario con ambos roles: pedir que elija modo primero
         if is_creator and is_alert_manager:
             self._send_role_mode_picker(number=number, user=usuario)
@@ -1070,6 +1100,34 @@ class WebSocketMessageHandler:
         # Enviar lista de alarmas
         self._send_create_alarma(number=number, usuario=usuario, empresa_id=empresa_id)
         return True
+
+    def _find_active_alert_for_user(self, telefono: str, usuario_id: str, user_sede: str) -> str:
+        """Busca alerta activa que matchee la sede del usuario.
+        Usa manager_list_active_alerts del backend, filtra por sede.
+        Retorna alert_id si encuentra, "" si no."""
+        if not self.backend_client:
+            return ""
+        try:
+            resp = self.backend_client.manager_list_active_alerts(
+                telefono=telefono, usuario_id=usuario_id
+            ) or {}
+            alerts = resp.get("alerts") or resp.get("data") or []
+            if not isinstance(alerts, list):
+                return ""
+            user_sede_norm = (user_sede or "").strip()
+            for alert in alerts:
+                if not isinstance(alert, dict):
+                    continue
+                alert_sede = (alert.get("sede") or "").strip()
+                if user_sede_norm and alert_sede == user_sede_norm:
+                    return alert.get("_id") or alert.get("alert_id") or ""
+            # Si no matchea sede pero solo hay una alerta activa, usarla
+            if len(alerts) == 1 and isinstance(alerts[0], dict):
+                return alerts[0].get("_id") or alerts[0].get("alert_id") or ""
+            return ""
+        except Exception as ex:
+            self.logger.debug(f"_find_active_alert_for_user error: {ex}")
+            return ""
 
     def _send_options_user(self, number: str, user: str, can_manage_alarm: bool = False, is_alert_manager: bool = False, is_in_alert: bool = True) -> bool:
         if not self.whatsapp_service:
