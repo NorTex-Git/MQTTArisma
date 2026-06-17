@@ -437,10 +437,12 @@ class WebSocketMessageHandler:
             self.logger.debug(f"Log IN omitido: {exc}")
 
         # Template "Ver detalles": handler universal (creador, sede, manager).
-        # Manejar antes de cualquier rama. Acepta dos shapes:
-        #  - type="button" (quick reply de plantilla): entry["button"]["text"]
-        #  - type="interactive" con button_reply: entry["interactive"]["button_reply"]["title"|"id"]
+        # Manejar antes de cualquier rama. Acepta varios shapes (button, interactive, text).
+        self.logger.info(
+            f"🔍 Ver detalles check: type_message={type_message}, entry={json.dumps(entry, default=str)[:500]}"
+        )
         if self._is_ver_detalles_tap(entry, type_message):
+            self.logger.info("✅ Ver detalles tap detectado → _send_alert_details_to_user")
             # Prioridad: foco activo (info_alert), fallback last_notified (manager observador)
             target_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")
             if not target_alert_id:
@@ -1231,20 +1233,42 @@ class WebSocketMessageHandler:
 
     @staticmethod
     def _is_ver_detalles_tap(entry: Dict, type_message: str) -> bool:
-        """Detecta tap del usuario en el botón 'Ver detalles' independientemente del shape.
-        Cubre dos casos: quick-reply de plantilla (type=button) y botón interactivo (type=interactive)."""
+        """Detecta tap del usuario en el botón 'Ver detalles' (cualquier shape de webhook).
+        Cubre: quick-reply de plantilla (type=button), botón interactivo (type=interactive)
+        con button_reply, mensaje de texto que sea el label del botón."""
         if not isinstance(entry, dict):
             return False
-        target = "VER DETALLES"
+
+        def _has_ver_detalles(s) -> bool:
+            if not isinstance(s, str):
+                return False
+            return "VER DETALLES" in s.strip().upper()
+
+        # Quick-reply de plantilla
         if type_message == "button":
-            payload = entry.get("button") or {}
-            text = (payload.get("text") or payload.get("payload") or "").strip().upper()
-            return text == target
+            btn = entry.get("button") or {}
+            if isinstance(btn, dict):
+                if _has_ver_detalles(btn.get("text")) or _has_ver_detalles(btn.get("payload")):
+                    return True
+            elif _has_ver_detalles(btn):
+                return True
+
+        # Botón interactivo (no debería pero por si acaso)
         if type_message == "interactive":
             inner = entry.get("interactive") or {}
-            btn = inner.get("button_reply") or {}
-            text = (btn.get("title") or btn.get("id") or "").strip().upper()
-            return text == target
+            btn_reply = inner.get("button_reply") or {}
+            if _has_ver_detalles(btn_reply.get("title")) or _has_ver_detalles(btn_reply.get("id")):
+                return True
+            list_reply = inner.get("list_reply") or {}
+            if _has_ver_detalles(list_reply.get("title")) or _has_ver_detalles(list_reply.get("id")):
+                return True
+
+        # Texto plano "Ver detalles" (algunos clientes lo envían así)
+        if type_message == "text":
+            txt = (entry.get("text") or {}).get("body") if isinstance(entry.get("text"), dict) else entry.get("text")
+            if _has_ver_detalles(txt):
+                return True
+
         return False
 
     def _send_alert_details_to_user(self, number: str, user: str, alert_id: Optional[str],
