@@ -174,47 +174,41 @@ class EmpresaAlertHandler:
             else:
                 self.logger.info("ℹ️ No hay usuarios para crear cache (todos son managers o lista vacía)")
 
-            # 2b. Patch (merge) del cache para managers: actualiza rol/empresa_id/id sin tocar info_alert
-            if managers_normalizados and self.whatsapp_service:
+            # 2b. Patch metadata managers (rol/empresa_id/id). Solo si ya existen en cache
+            # (cache se crea cuando el manager mande primer mensaje al bot). Usa flag
+            # persistida en AlertUser para evitar GET redundante.
+            if self.whatsapp_service:
                 empresa_id_for_patch = alert_data.get("empresa_id")
                 if not empresa_id_for_patch:
                     empresa_data = alert_data.get("empresa")
                     if isinstance(empresa_data, dict):
                         empresa_id_for_patch = empresa_data.get("id") or empresa_data.get("_id")
-                for mgr in managers_normalizados:
-                    telefono = mgr.get("numero", "")
-                    if not telefono:
+                for user in alert_users:
+                    if not user.is_manager:
                         continue
-                    # Guard: skip si manager no existe aún en cache (nunca interactuó con bot).
-                    # Sin guard, PATCH → 404 ruidoso. Cache se crea cuando el manager mande un mensaje.
-                    try:
-                        existing = self.whatsapp_service.get_number_from_cache(phone=telefono)
-                    except Exception:
-                        existing = None
-                    if not existing:
-                        self.logger.debug(f"ℹ️ Manager {telefono} aún no registrado en cache, skip patch")
+                    if not user.cache_exists():
+                        self.logger.debug(f"ℹ️ Manager {user.phone} aún no registrado en cache, skip patch")
                         continue
-                    role_info = mgr.get("rol") if isinstance(mgr, dict) else None
                     patch_data = {
                         "empresa": empresa_nombre,
-                        "id": mgr.get("usuario_id", "")
+                        "id": user.usuario_id,
                     }
-                    if isinstance(role_info, dict):
+                    if user.rol:
                         patch_data["rol"] = {
-                            "nombre": role_info.get("nombre") or role_info.get("name", ""),
-                            "is_creator": bool(role_info.get("is_creator")),
-                            "is_alert_manager": bool(role_info.get("is_alert_manager"))
+                            "nombre": user.rol.get("nombre") or user.rol.get("name", ""),
+                            "is_creator": bool(user.rol.get("is_creator")),
+                            "is_alert_manager": bool(user.rol.get("is_alert_manager")),
                         }
                     if empresa_id_for_patch:
                         patch_data["empresa_id"] = empresa_id_for_patch
                     try:
                         self.whatsapp_service.update_number_cache(
-                            phone=telefono,
+                            phone=user.phone,
                             data=patch_data,
-                            empresa_id=empresa_id_for_patch
+                            empresa_id=empresa_id_for_patch,
                         )
                     except Exception as ex:
-                        self.logger.warning(f"⚠️ No se pudo actualizar cache de manager {telefono}: {ex}")
+                        self.logger.warning(f"⚠️ No se pudo actualizar cache de manager {user.phone}: {ex}")
 
             # 3. Enviar comandos MQTT a dispositivos hardware
             mqtt_success = True

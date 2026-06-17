@@ -41,6 +41,7 @@ class AlertUser:
         alert_id: str,
         cache_entry: Optional[Dict] = None,
         usuario_id: str = "",
+        cache_exists_flag: Optional[bool] = None,
     ):
         self.phone = phone
         self.nombre = nombre
@@ -48,6 +49,11 @@ class AlertUser:
         self.alert_id = str(alert_id) if alert_id else ""
         self._cache = cache_entry or {}
         self.usuario_id = usuario_id
+        # Flag persistido: True si make_alert_user encontró cache real.
+        # Si None, fallback a heurística (cache_entry truthy).
+        self._cache_exists_flag = (
+            cache_exists_flag if cache_exists_flag is not None else bool(cache_entry)
+        )
 
     # --- Identidad ---
     @property
@@ -78,13 +84,11 @@ class AlertUser:
     def last_notified_id(self) -> Optional[str]:
         return (self._cache.get("last_notified_alert") or {}).get("alert_id")
 
-    def cache_exists(self, cache_svc) -> bool:
-        """True si ya existe entry en cache para este teléfono."""
-        try:
-            entry = cache_svc.get_number_from_cache(phone=self.phone)
-            return entry is not None
-        except Exception:
-            return False
+    def cache_exists(self, cache_svc=None) -> bool:
+        """True si ya existe entry en cache para este teléfono.
+        Usa flag persistida (set en make_alert_user) para evitar fetches redundantes.
+        cache_svc se mantiene para compat de firma."""
+        return self._cache_exists_flag
 
     # --- Ciclo de vida del cache ---
     def on_alert_broadcast(self, cache_svc) -> None:
@@ -266,11 +270,13 @@ def make_alert_user(
     is_manager_flag = bool(rol.get("is_alert_manager"))
 
     cache_entry: Dict = {}
+    cache_exists_flag = False
     if cache_svc and phone:
         try:
             raw = cache_svc.get_number_from_cache(phone=phone)
             if isinstance(raw, dict):
                 cache_entry = raw.get("data") or {}
+                cache_exists_flag = True
         except Exception:
             pass
 
@@ -288,6 +294,7 @@ def make_alert_user(
         alert_id=alert_id,
         cache_entry=cache_entry,
         usuario_id=usuario_id,
+        cache_exists_flag=cache_exists_flag,
     )
 
 
@@ -328,4 +335,5 @@ def make_whatsapp_user(cached_info: Dict, alert_id: str = "") -> AlertUser:
         alert_id=alert_id,
         cache_entry=data,
         usuario_id=usuario_id,
+        cache_exists_flag=True,
     )

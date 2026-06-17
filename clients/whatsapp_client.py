@@ -35,11 +35,16 @@ class WhatsAppClient:
             'User-Agent': 'MQTT-WhatsApp-Client/1.0'
         })
     
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, 
-                     params: Optional[Dict] = None) -> Optional[Dict]:
-        """Realizar petición HTTP con manejo de errores"""
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None,
+                     params: Optional[Dict] = None,
+                     expected_statuses: Optional[List[int]] = None) -> Optional[Dict]:
+        """Realizar petición HTTP con manejo de errores.
+
+        expected_statuses: lista de códigos HTTP que NO son errores en este contexto
+        (ej: [404] para sondas de existencia). No se logean como error y retornan None."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        
+        expected_statuses = expected_statuses or []
+
         try:
             response = self.session.request(
                 method=method,
@@ -48,23 +53,27 @@ class WhatsAppClient:
                 params=params,
                 timeout=30
             )
-            
+
+            if response.status_code in expected_statuses:
+                return None
+
             response.raise_for_status()
-            #print(f"📱 WhatsApp API Response: {response.status_code}")
-            
-            # Intentar parsear JSON
+
             try:
                 return response.json()
             except json.JSONDecodeError:
                 return {'raw_response': response.text}
-                
+
         except requests.exceptions.RequestException as e:
+            status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+            if status_code in expected_statuses:
+                return None
             self.logger.error(f"❌ ERROR EN PETICIÓN WHATSAPP:")
             self.logger.error(f"   🔗 URL: {url}")
             self.logger.error(f"   📝 Método: {method}")
             self.logger.error(f"   ⚠️  Error: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                self.logger.error(f"   📊 Código HTTP: {e.response.status_code}")
+            if status_code is not None:
+                self.logger.error(f"   📊 Código HTTP: {status_code}")
                 self.logger.error(f"   📄 Texto respuesta: {e.response.text}")
             return None
     
@@ -546,7 +555,10 @@ class WhatsAppClient:
         """
         try:
             phone_clean = self._clean_phone_number(phone)
-            response = self._make_request('GET', f'/api/numbers/{phone_clean}')
+            response = self._make_request(
+                'GET', f'/api/numbers/{phone_clean}',
+                expected_statuses=[404],
+            )
             if isinstance(response, dict) and response.get("success"):
                 return response.get("number")
             return None
