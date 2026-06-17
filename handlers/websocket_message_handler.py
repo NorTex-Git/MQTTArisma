@@ -512,7 +512,7 @@ class WebSocketMessageHandler:
                                 
                                 # Limpiar cache de usuarios
                                 try:
-                                    self._clean_bulk_cache_alert(list_user=list_users)
+                                    self._clean_bulk_cache_alert(list_user=list_users, alert_id=id_alert)
                                 except Exception as cache_error:
                                     self.logger.error(f"❌ Error limpiando cache: {cache_error}")
 
@@ -968,16 +968,57 @@ class WebSocketMessageHandler:
         except Exception as ex:
             self.logger.error(f"Error en _clean_managers_after_deactivation: {ex}")
 
-    def _clean_bulk_cache_alert(self,list_user:list[Dict]) -> None:
+    def _clean_bulk_cache_alert(self, list_user: list = None, alert_id: str = "") -> None:
+        """Limpia campos de alerta del cache para TODOS los teléfonos con foco en esta alerta.
+
+        Fuente principal: find_numbers_by_alert(alert_id) — consulta directa al backend WhatsApp,
+        cubre regulares + managers + dual-role. Fallback: list_user (compat con llamadas viejas).
+
+        Union de ambas fuentes elimina dependencia de que backend deactivate response
+        traiga la lista completa.
+        """
         try:
-            data = {
-                "info_alert" : "__DELETE__",
+            if not self.whatsapp_service:
+                return
+
+            patch_data = {
+                "info_alert": "__DELETE__",
                 "alert_active": "__DELETE__",
                 "disponible": "__DELETE__",
-                "embarcado": "__DELETE__"
+                "embarcado": "__DELETE__",
             }
-            list_phones = [n["numero"] for n in list_user]
-            self.whatsapp_service.bulk_update_numbers(phones = list_phones,data=data )
+
+            phones_set: set = set()
+
+            # Fuente 1: query directo por alert_id (cubre todos los caches con foco)
+            if alert_id:
+                try:
+                    focused = self.whatsapp_service.find_numbers_by_alert(
+                        alert_id=str(alert_id), manager_only=False
+                    ) or []
+                    for entry in focused:
+                        phone = entry.get("phone") or entry.get("numero") or entry.get("telefono")
+                        if phone:
+                            phones_set.add(str(phone).strip().lstrip("+"))
+                except Exception as ex:
+                    self.logger.warning(f"⚠️ find_numbers_by_alert falló para {alert_id}: {ex}")
+
+            # Fuente 2: list_user pasado por el caller (defensive, soporta entrega parcial)
+            if list_user:
+                for n in list_user:
+                    if not isinstance(n, dict):
+                        continue
+                    phone = n.get("numero") or n.get("phone") or n.get("telefono")
+                    if phone:
+                        phones_set.add(str(phone).strip().lstrip("+"))
+
+            if not phones_set:
+                self.logger.info(f"ℹ️ Sin teléfonos para limpiar cache de alerta {alert_id}")
+                return
+
+            list_phones = list(phones_set)
+            self.logger.info(f"🧹 Limpiando cache de alerta {alert_id} en {len(list_phones)} teléfonos")
+            self.whatsapp_service.bulk_update_numbers(phones=list_phones, data=patch_data)
         except Exception as ex:
             self.logger.error(f"Error en _clean_bulk_cache_alert {ex}")
     def _desactivate_alarm_to_back(self,id_alert, cached:Dict) ->Optional[Dict]:

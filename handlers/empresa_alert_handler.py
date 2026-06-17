@@ -231,8 +231,8 @@ class EmpresaAlertHandler:
             self.logger.info(f"   🏢 Empresa: {empresa}")
             self.logger.info(f"   🏛️ Sede: {sede}")
 
-            # 1. Limpiar caché de usuarios afectados (igual que WebSocket handler)
-            cache_success = self._clean_users_cache_after_deactivation(usuarios)
+            # 1. Limpiar caché de usuarios afectados (usa alert_id + lista como fuentes)
+            cache_success = self._clean_users_cache_after_deactivation(usuarios, alert_id=str(alert_id))
 
             # 1b. Limpiar foco de managers que tenían esta alerta activa.
             # Sin esto, managers siguen mandando mensajes a una alarma cerrada (info_alert quedaba colgado).
@@ -330,50 +330,58 @@ class EmpresaAlertHandler:
         
         return True
 
-    def _clean_users_cache_after_deactivation(self, usuarios: List[Dict]) -> bool:
-        """Limpiar caché de usuarios después de desactivación (igual que WebSocket handler)"""
+    def _clean_users_cache_after_deactivation(self, usuarios: List[Dict], alert_id: str = "") -> bool:
+        """Limpiar caché de TODOS los teléfonos con foco en esta alerta.
+
+        Fuente principal: find_numbers_by_alert(alert_id) — directo del backend WhatsApp,
+        cubre regulares + managers + dual-role + cualquiera con info_alert.alert_id == este.
+        Fallback: usuarios pasados (compat / casos donde alert_id no esté).
+        """
         if not self.whatsapp_service:
             self.logger.warning("⚠️ WhatsApp service no disponible para limpieza de caché")
             return False
-            
+
         try:
-            # Crear estructura de datos igual que en WebSocket handler
-            list_user_format = []
-            for usuario in usuarios:
-                telefono = usuario.get("telefono", "")
-                nombre = usuario.get("nombre", "Usuario")
-                
-                # Limpiar formato del teléfono si es necesario
-                if telefono.startswith("+"):
-                    telefono = telefono[1:]  # Remover el +
-                
-                if telefono:
-                    list_user_format.append({
-                        "numero": telefono,
-                        "nombre": nombre
-                    })
-            
-            if not list_user_format:
-                self.logger.warning("⚠️ No hay usuarios válidos para limpiar caché")
-                return False
-            
-            # Usar la misma estructura de datos de limpieza que el WebSocket handler
             data_to_delete = {
                 "info_alert": "__DELETE__",
-                "alert_active": "__DELETE__", 
+                "alert_active": "__DELETE__",
                 "disponible": "__DELETE__",
-                "embarcado": "__DELETE__"
+                "embarcado": "__DELETE__",
             }
-            
-            # Extraer solo los números de teléfono
-            list_phones = [user["numero"] for user in list_user_format]
-            
-            # Usar el método bulk_update_numbers igual que en WebSocket handler
+
+            phones_set: set = set()
+
+            # Fuente 1: query directo por alert_id
+            if alert_id:
+                try:
+                    focused = self.whatsapp_service.find_numbers_by_alert(
+                        alert_id=str(alert_id), manager_only=False
+                    ) or []
+                    for entry in focused:
+                        phone = entry.get("phone") or entry.get("numero") or entry.get("telefono")
+                        if phone:
+                            phones_set.add(str(phone).strip().lstrip("+"))
+                except Exception as ex:
+                    self.logger.warning(f"⚠️ find_numbers_by_alert falló para {alert_id}: {ex}")
+
+            # Fuente 2: lista pasada (defensive)
+            for usuario in usuarios or []:
+                if not isinstance(usuario, dict):
+                    continue
+                telefono = usuario.get("telefono") or usuario.get("numero") or usuario.get("phone")
+                if not telefono:
+                    continue
+                phones_set.add(str(telefono).strip().lstrip("+"))
+
+            if not phones_set:
+                self.logger.warning(f"⚠️ Sin teléfonos para limpiar cache de alerta {alert_id}")
+                return False
+
+            list_phones = list(phones_set)
             self.whatsapp_service.bulk_update_numbers(phones=list_phones, data=data_to_delete)
-            
-            self.logger.info(f"✅ Caché limpiado para {len(list_phones)} usuarios")
+            self.logger.info(f"✅ Caché limpiado para {len(list_phones)} teléfonos (alerta {alert_id})")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"❌ Error limpiando caché de usuarios: {e}")
             return False
