@@ -96,7 +96,6 @@ class EmpresaAlertHandler:
             usuarios = alert_data.get("numeros_telefonicos", [])
             usuarios_normalizados = self._normalize_usuarios_list(usuarios)
             managers_normalizados = self._normalize_usuarios_list(alert_managers_raw)
-            manager_phone_set = {m.get("numero") for m in managers_normalizados if m.get("numero")}
             topics_hardware = alert_data.get("topics_otros_hardware", [])
             descripcion = alert_data.get("descripcion", "")
 
@@ -160,19 +159,18 @@ class EmpresaAlertHandler:
                     summary_body=f"Plantilla crear_alerta enviada (alerta {alert_name})"
                 )
 
-            # 2. Crear cache masivo para usuarios de la sede (excluye managers para respetar su foco)
+            # 2. Crear cache masivo para usuarios de la sede.
+            # Incluye managers que también son miembros de sede (dual-role o managers
+            # propios de esta sede): su foco ES esta alerta. Solo managers PURE cross-sede
+            # quedan fuera, manejados por ManagerLastNotifiedPatch en el fanout.
             cache_success = True
-            cache_targets = [
-                u for u in usuarios_normalizados
-                if u.get("numero") not in manager_phone_set
-            ]
-            if cache_targets:
+            if usuarios_normalizados:
                 cache_success = self._create_bulk_cache_empresa(
                     alert_data=alert_data,
-                    usuarios=cache_targets
+                    usuarios=usuarios_normalizados
                 )
             else:
-                self.logger.info("ℹ️ No hay usuarios para crear cache (todos son managers o lista vacía)")
+                self.logger.info("ℹ️ No hay usuarios de sede para crear cache")
 
             # 2b. Metadata managers ya manejada por ManagerLastNotifiedPatch en el fanout
             # (crea entry si no existe, patch si existe). No hay block separado redundante.

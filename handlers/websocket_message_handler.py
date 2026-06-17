@@ -472,19 +472,28 @@ class WebSocketMessageHandler:
                     )
                     #esto valida si es para activacion de un usuario
                     if type_button == "Activar_User":
-                        self.backend_client.update_user_status( alert_id = id_alert,
-                                                                usuario_id = id_user,
-                                                                disponible = True)
-                        data_update = {
-                            "disponible" : True
-                        }
+                        # Idempotencia: si ya está disponible, no re-llamar backend
+                        if exist_alert.get("disponible") is True:
+                            self.whatsapp_service.send_individual_message(
+                                phone=number,
+                                message="Ya estabas marcado como disponible. Sigues recibiendo mensajes del equipo."
+                            )
+                            return
+                        self.backend_client.update_user_status(
+                            alert_id=id_alert,
+                            usuario_id=id_user,
+                            disponible=True,
+                        )
+                        data_update = {"disponible": True}
                         self.whatsapp_service.update_number_cache(
                             phone=number,
                             data=data_update,
                             empresa_id=cached_info.get("data", {}).get("empresa_id")
                         )
-                        self.whatsapp_service.send_individual_message(phone = number,
-                                                                      message = "Ahora recibiras mensajes de los miembros del equipo")
+                        self.whatsapp_service.send_individual_message(
+                            phone=number,
+                            message="Ahora recibiras mensajes de los miembros del equipo"
+                        )
                     elif type_button == "APAGAR ALARMA":
                         if not is_creator:
                             self._send_permission_denied_message(number, user, "apagar la alarma")
@@ -811,6 +820,60 @@ class WebSocketMessageHandler:
             #         return  # No enviar lista de alarmas si hubo error
         
         
+
+        # Defensive button dispatcher: si el cache no tiene alert_active pero el usuario
+        # tocó un botón conocido (ej. Activar_User desde Ver detalles), procesar el botón
+        # antes de caer al role-picker. Evita que tap a botón se confunda con "no hay alerta".
+        if is_button:
+            button_id = is_button.get("id", "")
+            if button_id == "Activar_User":
+                target_alert_id = (
+                    (exist_alert.get("info_alert") or {}).get("alert_id")
+                    or (exist_alert.get("last_notified_alert") or {}).get("alert_id")
+                    or self._find_active_alert_for_user(
+                        telefono=number,
+                        usuario_id=exist_alert.get("id", ""),
+                        user_sede=exist_alert.get("sede", ""),
+                    )
+                )
+                if not target_alert_id:
+                    self.whatsapp_service.send_individual_message(
+                        phone=number,
+                        message="No hay alerta activa para marcar disponibilidad."
+                    )
+                    return
+                # Idempotencia
+                if exist_alert.get("disponible") is True:
+                    self.whatsapp_service.send_individual_message(
+                        phone=number,
+                        message="Ya estabas marcado como disponible. Sigues recibiendo mensajes del equipo."
+                    )
+                    return
+                try:
+                    self.backend_client.update_user_status(
+                        alert_id=target_alert_id,
+                        usuario_id=exist_alert.get("id", ""),
+                        disponible=True,
+                    )
+                except Exception as ex:
+                    self.logger.error(f"❌ Error update_user_status defensive: {ex}")
+                try:
+                    self.whatsapp_service.update_number_cache(
+                        phone=number,
+                        data={
+                            "disponible": True,
+                            "alert_active": True,
+                            "info_alert": {"alert_id": target_alert_id},
+                        },
+                        empresa_id=exist_alert.get("empresa_id"),
+                    )
+                except Exception as ex:
+                    self.logger.error(f"❌ Error update_number_cache defensive: {ex}")
+                self.whatsapp_service.send_individual_message(
+                    phone=number,
+                    message="Ahora recibiras mensajes de los miembros del equipo"
+                )
+                return
 
         # Usuario con ambos roles: pedir que elija modo primero
         if is_creator and is_alert_manager:
