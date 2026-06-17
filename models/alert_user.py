@@ -103,6 +103,37 @@ class AlertUser:
         cache_svc se mantiene para compat de firma."""
         return self._cache_exists_flag
 
+    # --- Permisos por rol (acción → ¿puede ejecutarla?) ---
+    # Reemplazan if/else dispersos como `if not is_creator: permission_denied`.
+    # Cada subclase override solo lo que su rol cambia.
+    def can_apagar(self) -> bool:
+        """Apagar la alarma activa."""
+        return False
+
+    def can_embarcado(self, alert_data: Dict) -> bool:
+        """Marcarse embarcado en una alerta. Solo si pertenece a esa sede."""
+        return self.is_in_sede_for_alert(alert_data)
+
+    def can_marcar_disponible(self, alert_data: Dict) -> bool:
+        """Marcarse disponible. Solo si pertenece a la sede de la alerta."""
+        return self.is_in_sede_for_alert(alert_data)
+
+    def can_ver_ubicacion(self) -> bool:
+        """Recibir ubicación de la alarma."""
+        return True
+
+    def can_cambiar_alerta(self) -> bool:
+        """Abrir picker de cambio de foco entre alertas activas."""
+        return False
+
+    def can_switch_alert(self) -> bool:
+        """Confirmar switch hacia una alerta específica."""
+        return False
+
+    def can_activar_alarma(self) -> bool:
+        """Activar nueva alarma (creator/dual)."""
+        return False
+
     # --- Ciclo de vida del cache ---
     def on_alert_broadcast(self, cache_svc) -> None:
         """Qué hace este tipo de usuario cuando se broadcast una nueva alerta."""
@@ -153,6 +184,12 @@ class CreatorUser(AlertUser):
     def is_manager(self) -> bool:
         return False
 
+    def can_apagar(self) -> bool:
+        return True
+
+    def can_activar_alarma(self) -> bool:
+        return True
+
     def on_alert_broadcast(self, cache_svc) -> None:
         # Ya tiene alert_active desde que creó la alerta. No modificar cache.
         pass
@@ -167,6 +204,12 @@ class ManagerUser(AlertUser):
 
     @property
     def is_manager(self) -> bool:
+        return True
+
+    def can_cambiar_alerta(self) -> bool:
+        return True
+
+    def can_switch_alert(self) -> bool:
         return True
 
     def on_alert_broadcast(self, cache_svc) -> None:
@@ -207,6 +250,18 @@ class DualRoleUser(AlertUser):
 
     @property
     def is_manager(self) -> bool:
+        return True
+
+    def can_apagar(self) -> bool:
+        return True
+
+    def can_activar_alarma(self) -> bool:
+        return True
+
+    def can_cambiar_alerta(self) -> bool:
+        return True
+
+    def can_switch_alert(self) -> bool:
         return True
 
     def on_alert_broadcast(self, cache_svc) -> None:

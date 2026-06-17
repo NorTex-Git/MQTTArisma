@@ -495,7 +495,7 @@ class WebSocketMessageHandler:
                             message="Ahora recibiras mensajes de los miembros del equipo"
                         )
                     elif type_button == "APAGAR ALARMA":
-                        if not is_creator:
+                        if not user_obj.can_apagar():
                             self._send_permission_denied_message(number, user, "apagar la alarma")
                             return
                         try:
@@ -585,11 +585,13 @@ class WebSocketMessageHandler:
                             "📍 Reenviando disponibilidad y mapa por boton sin payload"
                         )
                         data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
-                        data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") == number]
-                        # Estoy disponible solo si el usuario pertenece a la sede de la alerta
+                        _norm_n3 = lambda p: (p or "").strip().lstrip("+")
+                        norm_target3 = _norm_n3(number)
+                        data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if _norm_n3(u.get("numero", "")) == norm_target3]
+                        if not data_user and user_obj.is_in_sede_for_alert(data_alert):
+                            data_user = [{"numero": number, "nombre": user}]
                         if data_user:
                             self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
-                        # Ubicación se envía a su propio número si es manager observando
                         loc_recipients = data_user if data_user else [{"numero": number, "nombre": user}]
                         self._send_location_personalized_message(
                             numeros_data=loc_recipients,
@@ -600,13 +602,19 @@ class WebSocketMessageHandler:
                     opcion = is_list["id"]
                     data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
                     numeros_list = data_alert.get("numeros_telefonicos") or []
-                    data_user = [u for u in numeros_list if u.get("numero") == number]
+                    # Normalizar comparación de tel para que dual-role/managers en sede pasen el check.
+                    # Si pertenece a sede vía OOP, construir data_user con entrada propia si no aparece raw.
+                    _norm_n = lambda p: (p or "").strip().lstrip("+")
+                    norm_target = _norm_n(number)
+                    data_user = [u for u in numeros_list if _norm_n(u.get("numero", "")) == norm_target]
+                    if not data_user and user_obj.is_in_sede_for_alert(data_alert):
+                        data_user = [{"numero": number, "nombre": user}]
                     if opcion == "APAGAR":
-                        if not is_creator:
+                        if not user_obj.can_apagar():
                             self._send_permission_denied_message(number, user, "apagar la alarma")
                             self._send_options_user(number=number, user=user, can_manage_alarm=False, is_alert_manager=is_alert_manager, is_in_alert=bool(data_user))
                             return
-                        if not data_user:
+                        if not user_obj.is_in_sede_for_alert(data_alert):
                             self.whatsapp_service.send_individual_message(
                                 phone=number,
                                 message="No perteneces a la sede de esta alerta."
@@ -619,14 +627,14 @@ class WebSocketMessageHandler:
                         recipients_loc = data_user if data_user else [{"numero": number, "nombre": user}]
                         self._send_location_personalized_message(numeros_data=recipients_loc,tipo_alarma_info=data_alert)
                     elif opcion == "EMBARCADO":
-                        if not data_user:
+                        if not user_obj.can_embarcado(data_alert):
                             self.whatsapp_service.send_individual_message(
                                 phone=number,
                                 message="No perteneces a la sede de esta alerta."
                             )
                             self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=is_alert_manager, is_in_alert=False)
                             return
-                        data_user_not_you = [u for u in numeros_list if u.get("numero") != number]
+                        data_user_not_you = [u for u in numeros_list if _norm_n(u.get("numero", "")) != norm_target]
                         self.backend_client.update_user_status(alert_id=exist_alert["info_alert"]["alert_id"],
                                                                 usuario_id = exist_alert["id"],
                                                                 embarcado = True)
@@ -637,13 +645,13 @@ class WebSocketMessageHandler:
                         )
                         self._send_bulk_team(list_users=data_user_not_you,message="Estoy camino a la emergencia",name_made=user,type_message="text")
                     elif opcion == "CAMBIAR_ALERTA":
-                        if not is_alert_manager:
+                        if not user_obj.can_cambiar_alerta():
                             self._send_permission_denied_message(number, user, "cambiar de alerta")
                             self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=False, is_in_alert=bool(data_user))
                             return
                         self._send_manager_alert_picker(number=number, user=user, usuario_id=id_user)
                     elif opcion.startswith("SWITCH_ALERT_"):
-                        if not is_alert_manager:
+                        if not user_obj.can_switch_alert():
                             self._send_permission_denied_message(number, user, "cambiar de alerta")
                             return
                         target_alert_id = opcion.replace("SWITCH_ALERT_", "", 1)
@@ -653,9 +661,11 @@ class WebSocketMessageHandler:
                 elif isinstance(exist_alert.get("disponible"), bool) and not exist_alert["disponible"]:
                     #quiere decir que mando un mensaje cuando aun no puede hablar
                     data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
-                    #print(json.dumps(data_alert,indent=4))
-                    data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") == number]
-                    # Estoy disponible solo si el usuario pertenece a la sede de la alerta
+                    _norm_n2 = lambda p: (p or "").strip().lstrip("+")
+                    norm_target2 = _norm_n2(number)
+                    data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if _norm_n2(u.get("numero", "")) == norm_target2]
+                    if not data_user and user_obj.is_in_sede_for_alert(data_alert):
+                        data_user = [{"numero": number, "nombre": user}]
                     if data_user:
                         self._send_create_active_user(alert=data_alert,list_users=data_user,data_user=cached_info)
                     loc_recipients = data_user if data_user else [{"numero": number, "nombre": user}]
@@ -707,12 +717,10 @@ class WebSocketMessageHandler:
                             "HELP"
                         ]
                         if body_text.upper() in comandos_opciones:
-                            # Verificar si el usuario pertenece a la sede de la alerta actual
+                            # Membresía de sede via método polimórfico (cubre creator,
+                            # manager, dual-role, regular — sin mismatch de formato de tel).
                             data_alert_menu = self.backend_client.get_alert_by_id(alert_id=id_alert, user_id=id_user).get("alert", {}) or {}
-                            is_in_current_alert = any(
-                                u.get("numero") == number
-                                for u in (data_alert_menu.get("numeros_telefonicos") or [])
-                            )
+                            is_in_current_alert = user_obj.is_in_sede_for_alert(data_alert_menu)
                             self._send_options_user(number=number,user=user,can_manage_alarm=is_creator,is_alert_manager=is_alert_manager,is_in_alert=is_in_current_alert)
                         else:
                             data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
@@ -733,12 +741,12 @@ class WebSocketMessageHandler:
                     #print(json.dumps(entry,indent=4))
                     location = entry.get("location",False)
                     if location:
-                        if not is_creator:
+                        if not user_obj.can_activar_alarma():
                             self._send_permission_denied_message(number, user, "activar la alarma")
                             return
                         self._create_alarm(cached_info=cached_info,ubication=location)
                     else:
-                        if not is_creator:
+                        if not user_obj.can_activar_alarma():
                             self._send_permission_denied_message(number, user, "activar la alarma")
                         else:
                             message_location = f"{user}\nPara crear la alerta {exist_alert['info_alert']['alert_title']}\nDebes enviar la ubicacion."
@@ -761,7 +769,7 @@ class WebSocketMessageHandler:
                 opcion_id = is_list.get("id", "")
                 # Selector de modo para usuarios con ambos roles
                 if opcion_id == "MODE_CREATE_ALERT":
-                    if not is_creator:
+                    if not user_obj.can_activar_alarma():
                         self._send_permission_denied_message(number, user, "crear alertas")
                         return
                     self._send_create_alarma(
@@ -773,7 +781,7 @@ class WebSocketMessageHandler:
                     )
                     return
                 if opcion_id == "MODE_MANAGER":
-                    if not is_alert_manager:
+                    if not user_obj.can_cambiar_alerta():
                         self._send_permission_denied_message(number, user, "usar modo manager")
                         return
                     id_user_manager = exist_alert.get("id", "")
@@ -781,20 +789,20 @@ class WebSocketMessageHandler:
                     return
                 # Manager: opciones de cambiar foco no requieren is_creator
                 if opcion_id == "CAMBIAR_ALERTA":
-                    if not is_alert_manager:
+                    if not user_obj.can_cambiar_alerta():
                         self._send_permission_denied_message(number, user, "cambiar de alerta")
                         return
                     id_user_manager = exist_alert.get("id", "")
                     self._send_manager_alert_picker(number=number, user=user, usuario_id=id_user_manager)
                     return
                 if opcion_id.startswith("SWITCH_ALERT_"):
-                    if not is_alert_manager:
+                    if not user_obj.can_switch_alert():
                         self._send_permission_denied_message(number, user, "cambiar de alerta")
                         return
                     target_alert_id = opcion_id.replace("SWITCH_ALERT_", "", 1)
                     self._handle_manager_switch(number=number, user=user, target_alert_id=target_alert_id, user_obj=user_obj)
                     return
-                if not is_creator:
+                if not user_obj.can_activar_alarma():
                     self._send_permission_denied_message(number, user, "activar una alarma")
                     return
                 self._alarm_back_save(entry_alarm=is_list,cached_info=cached_info)
