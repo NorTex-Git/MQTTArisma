@@ -1395,7 +1395,7 @@ class WebSocketMessageHandler:
             friendly_user = self._get_first_name(user) or "Manager"
             self.whatsapp_service.send_list_message(
                 phone=number,
-                header_text=f"{friendly_user}\nElige la alerta a la que quieres cambiar",
+                header_text=f"{friendly_user}\nElige la alerta en la que quieres participar",
                 body_text="Cada opción es la última alerta activa de una sede.",
                 footer_text="RESCUE SYSTEM",
                 button_text="Ver alertas",
@@ -1801,6 +1801,9 @@ class WebSocketMessageHandler:
         template_recipients = []
         alert_name = alert_info.get("nombre_alerta") or alert_info.get("nombre") or "Alerta"
         creator = creator_name or alert_info.get("activacion_alerta", {}).get("nombre", "un miembro autorizado")
+        sede = alert_info.get("sede")
+        # Embebemos zona dentro del 3er param (template Meta tiene solo 3 placeholders)
+        creator_con_zona = f"{creator}, en la zona {sede}" if sede else creator
 
         for usuario in recipients:
             numero = usuario.get("numero")
@@ -1819,7 +1822,7 @@ class WebSocketMessageHandler:
                         "parameters": [
                             {"type": "text", "text": recipient_name},
                             {"type": "text", "text": alert_name},
-                            {"type": "text", "text": creator}
+                            {"type": "text", "text": creator_con_zona}
                         ]
                     }
                 ]

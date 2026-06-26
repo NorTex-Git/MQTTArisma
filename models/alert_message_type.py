@@ -29,6 +29,9 @@ class TemplateMessage(AlertMessageType):
         alert_name = alert_data.get("nombre_alerta") or alert_data.get("tipo_alerta") or "Alerta"
         activacion = alert_data.get("activacion_alerta") or {}
         creador = activacion.get("nombre") or alert_data.get("empresa_nombre", "un miembro autorizado")
+        sede = alert_data.get("sede")
+        # Embebemos zona dentro del 3er param (template Meta tiene solo 3 placeholders)
+        creador_con_zona = f"{creador}, en la zona {sede}" if sede else creador
 
         recipient = {
             "phone": user.phone,
@@ -40,7 +43,7 @@ class TemplateMessage(AlertMessageType):
                     "parameters": [
                         {"type": "text", "text": user.nombre or "Usuario"},
                         {"type": "text", "text": alert_name},
-                        {"type": "text", "text": creador},
+                        {"type": "text", "text": creador_con_zona},
                     ],
                 }
             ],
