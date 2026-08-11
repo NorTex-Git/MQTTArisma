@@ -21,6 +21,14 @@ from services.whatsapp_service import WhatsAppService
 from handlers.websocket_message_handler import WebSocketMessageHandler
 from utils.logger import setup_logger, setup_root_logging
 from config import AppConfig
+from config.settings import _env_int
+
+
+def _internal_http_port() -> int:
+    """Puerto del HTTP interno. docker-compose interpola ${VAR} a "" cuando la
+    variable no existe en el .env, y un int("") tumbaba el arranque completo
+    del servicio (con él, el endpoint de fanout)."""
+    return _env_int("INTERNAL_HTTP_PORT", 8081)
 
 
 class WebSocketService:
@@ -117,7 +125,7 @@ class WebSocketService:
             "service": "websocket_service",
             "config": {
                 **self.config.mqtt.summary(),
-                "internal_http_port": int(os.getenv("INTERNAL_HTTP_PORT", "8081")),
+                "internal_http_port": _internal_http_port(),
                 "backend_url": self.config.backend.base_url,
             },
             "publishers": {name: pub.get_status() for name, pub in publishers.items()},
@@ -149,7 +157,7 @@ class WebSocketService:
 
     async def _start_http_server(self) -> None:
         """Iniciar servidor HTTP interno en puerto 8081"""
-        http_port = int(os.getenv("INTERNAL_HTTP_PORT", "8081"))
+        http_port = _internal_http_port()
         app = web.Application()
         app.router.add_post("/internal/fanout-alert", self._handle_fanout)
         app.router.add_get("/internal/status", self._handle_status)
@@ -170,8 +178,16 @@ class WebSocketService:
         try:
             # Iniciar servidor WebSocket
             await self.websocket_server.start()
-            # Iniciar servidor HTTP interno para fanout desde RescueBack
-            await self._start_http_server()
+            # Iniciar servidor HTTP interno para fanout desde RescueBack.
+            # Si falla, el servicio sigue vivo atendiendo WhatsApp en vez de
+            # caer entero (y quedar en bucle de reinicio).
+            try:
+                await self._start_http_server()
+            except Exception as http_error:
+                self.logger.critical(
+                    "🚨 HTTP interno NO disponible (%s): el backend no podrá disparar "
+                    "activaciones ni desactivaciones de hardware", http_error
+                )
             self.is_running = True
 
             self.logger.info("✅ Servicio WebSocket iniciado correctamente")
