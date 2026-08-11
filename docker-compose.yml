@@ -12,6 +12,9 @@ services:
       - MQTT_PASSWORD=${MQTT_PASSWORD}
       - MQTT_CLIENT_ID=${MQTT_CLIENT_ID}
       - MQTT_KEEP_ALIVE=${MQTT_KEEP_ALIVE}
+      - MQTT_TRANSPORT=${MQTT_TRANSPORT}
+      - MQTT_WS_PATH=${MQTT_WS_PATH}
+      - MQTT_TLS=${MQTT_TLS}
       - BACKEND_URL=${BACKEND_URL}
       - BACKEND_API_KEY=${BACKEND_API_KEY}
       - BACKEND_TIMEOUT=${BACKEND_TIMEOUT}
@@ -46,7 +49,22 @@ services:
     command: ["python", "websocket_service.py"]
     expose:
       - "8080"
+      - "8081"
     environment:
+      # MQTT: este servicio publica a los semáforos/pantallas en las alertas de
+      # web y WhatsApp. Sin estas variables caía al .env horneado en la imagen y
+      # publicaba a un broker equivocado sin reportar error.
+      - MQTT_BROKER=${MQTT_BROKER}
+      - MQTT_PORT=${MQTT_PORT}
+      - MQTT_TOPIC=${MQTT_TOPIC}
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
+      - MQTT_CLIENT_ID=${MQTT_CLIENT_ID}
+      - MQTT_KEEP_ALIVE=${MQTT_KEEP_ALIVE}
+      - MQTT_TRANSPORT=${MQTT_TRANSPORT}
+      - MQTT_WS_PATH=${MQTT_WS_PATH}
+      - MQTT_TLS=${MQTT_TLS}
+      - INTERNAL_HTTP_PORT=${INTERNAL_HTTP_PORT}
       - WEBSOCKET_HOST=${WEBSOCKET_HOST}
       - WEBSOCKET_PORT=${WEBSOCKET_PORT}
       - WEBSOCKET_PING_INTERVAL=${WEBSOCKET_PING_INTERVAL}
@@ -69,10 +87,13 @@ services:
       - rescue-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "8080"]
+      # /health responde 503 si ningún publisher MQTT está conectado:
+      # el fallo lo detecta el orquestador, no un usuario en una emergencia.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 20s
 networks:
   global-network:
     external: true

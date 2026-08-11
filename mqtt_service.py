@@ -19,7 +19,7 @@ from clients.backend_client import BackendClient
 from clients.mqtt_publisher_lite import MQTTPublisherLite
 from handlers.mqtt_message_handler import MQTTMessageHandler
 from services.whatsapp_service import WhatsAppService
-from utils.logger import setup_logger
+from utils.logger import setup_logger, setup_root_logging
 from config import AppConfig
 from config.settings import MQTTConfig
 
@@ -30,13 +30,17 @@ class MQTTService:
     def __init__(self):
         # Configuración
         self.config = AppConfig()
+        # Logging del root ANTES de construir clientes (ver websocket_service)
+        setup_root_logging(self.config.log_level, log_file="logs/mqtt_service.log")
         # Logger con archivo separado para poder hacer tail -f
         self.logger = setup_logger(
-            "mqtt_service", 
+            "mqtt_service",
             self.config.log_level,
             log_file="logs/mqtt_service.log"
         )
-        
+        self.logger.info("⚙️ Config MQTT efectiva: %s", self.config.mqtt.summary())
+
+
         # Clientes independientes para MQTT
         self.backend_client = BackendClient(self.config.backend)
         self.whatsapp_service = WhatsAppService(self.config.whatsapp)

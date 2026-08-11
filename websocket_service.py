@@ -19,7 +19,7 @@ from clients.websocket_server import WebSocketServer
 from clients.backend_client import BackendClient
 from services.whatsapp_service import WhatsAppService
 from handlers.websocket_message_handler import WebSocketMessageHandler
-from utils.logger import setup_logger
+from utils.logger import setup_logger, setup_root_logging
 from config import AppConfig
 
 
@@ -29,13 +29,17 @@ class WebSocketService:
     def __init__(self):
         # Configuración
         self.config = AppConfig()
+        # Logging del root ANTES de construir clientes: los publishers MQTT
+        # loguean su conexión en el constructor y esos logs se perdían.
+        setup_root_logging(self.config.log_level, log_file="logs/websocket_service.log")
         # Logger con archivo separado para poder hacer tail -f
         self.logger = setup_logger(
-            "websocket_service", 
+            "websocket_service",
             self.config.log_level,
             log_file="logs/websocket_service.log"
         )
-        
+        self.logger.info("⚙️ Config MQTT efectiva: %s", self.config.mqtt.summary())
+
         # Clientes independientes para WebSocket
         self.backend_client = BackendClient(self.config.backend)
         self.whatsapp_service = WhatsAppService(self.config.whatsapp)
@@ -70,6 +74,15 @@ class WebSocketService:
             if not isinstance(payload, dict):
                 return web.json_response({"success": False, "error": "payload must be a JSON object"}, status=400)
 
+            handler = self.websocket_server.message_handler
+
+            # Desactivación: el backend manda el evento completo con su `type`.
+            # Antes este endpoint solo sabía de activaciones y habría tratado una
+            # desactivación como si fuera una alerta nueva.
+            if payload.get("type") == "alert_deactivated_by_empresa":
+                success = handler.trigger_alert_event(payload)
+                return web.json_response({"success": success}, status=200 if success else 500)
+
             # Compatibilidad: payload puede venir como {alert, alert_managers} o como alert plano (legado)
             if "alert" in payload and isinstance(payload.get("alert"), dict):
                 alert_data = payload["alert"]
@@ -78,19 +91,69 @@ class WebSocketService:
                 alert_data = payload
                 alert_managers = []
 
-            handler = self.websocket_server.message_handler
             success = handler.trigger_fanout(alert_data, alert_managers=alert_managers)
             return web.json_response({"success": success}, status=200 if success else 500)
         except Exception as e:
             self.logger.error(f"❌ Error en /internal/fanout-alert: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    def _get_publishers(self) -> dict:
+        """Publishers MQTT vivos en este proceso, por nombre"""
+        publishers = {}
+        try:
+            handler = self.websocket_server.message_handler
+            if handler.mqtt_publisher:
+                publishers["websocket"] = handler.mqtt_publisher
+            if handler.empresa_handler and handler.empresa_handler.mqtt_publisher:
+                publishers["empresa"] = handler.empresa_handler.mqtt_publisher
+        except Exception as e:
+            self.logger.error(f"❌ Error obteniendo publishers: {e}")
+        return publishers
+
+    async def _handle_status(self, request: web.Request) -> web.Response:
+        """GET /internal/status - diagnóstico: a qué broker publica y si está conectado"""
+        publishers = self._get_publishers()
+        payload = {
+            "service": "websocket_service",
+            "config": {
+                **self.config.mqtt.summary(),
+                "internal_http_port": int(os.getenv("INTERNAL_HTTP_PORT", "8081")),
+                "backend_url": self.config.backend.base_url,
+            },
+            "publishers": {name: pub.get_status() for name, pub in publishers.items()},
+        }
+        try:
+            handler = self.websocket_server.message_handler
+            if handler.empresa_handler:
+                payload["empresa_handler"] = handler.empresa_handler.get_statistics()
+            payload["whatsapp"] = handler.get_whatsapp_statistics()
+        except Exception as e:
+            payload["stats_error"] = str(e)
+
+        return web.json_response(payload)
+
+    async def _handle_health(self, request: web.Request) -> web.Response:
+        """GET /health - unhealthy si ningún publisher MQTT está conectado.
+        Así la falla la ve el orquestador y no un usuario en una emergencia."""
+        publishers = self._get_publishers()
+        connected = {name: pub.is_connected for name, pub in publishers.items()}
+        healthy = bool(connected) and all(connected.values())
+        return web.json_response(
+            {
+                "status": "ok" if healthy else "degraded",
+                "mqtt_publishers": connected,
+                "broker": f"{self.config.mqtt.broker}:{self.config.mqtt.port}",
+            },
+            status=200 if healthy else 503
+        )
+
     async def _start_http_server(self) -> None:
         """Iniciar servidor HTTP interno en puerto 8081"""
         http_port = int(os.getenv("INTERNAL_HTTP_PORT", "8081"))
         app = web.Application()
         app.router.add_post("/internal/fanout-alert", self._handle_fanout)
-        app.router.add_get("/health", lambda r: web.json_response({"status": "ok"}))
+        app.router.add_get("/internal/status", self._handle_status)
+        app.router.add_get("/health", self._handle_health)
         self._http_runner = web.AppRunner(app)
         await self._http_runner.setup()
         site = web.TCPSite(self._http_runner, "0.0.0.0", http_port)

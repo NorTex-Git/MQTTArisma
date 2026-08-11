@@ -147,13 +147,33 @@ class MQTTClient:
         """Conectar al broker MQTT"""
         try:
             self.client.connect(
-                self.config.broker, 
-                self.config.port, 
+                self.config.broker,
+                self.config.port,
                 self.config.keep_alive
             )
             return True
         except Exception as e:
             self.logger.error(f"Error conectando al broker: {e}")
+            return False
+
+    def connect_async(self) -> bool:
+        """
+        Conectar al broker sin bloquear ni fallar si el broker no responde.
+
+        paho resuelve la conexión dentro del loop de red y, con
+        reconnect_delay_set(1, 120), reintenta indefinidamente por su cuenta.
+        Usar esto en publishers para que un broker caído al arranque no deje
+        el servicio inutilizable de forma permanente.
+        """
+        try:
+            self.client.connect_async(
+                self.config.broker,
+                self.config.port,
+                self.config.keep_alive
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"Error programando conexión al broker: {e}")
             return False
     
     def start_loop(self):

@@ -58,8 +58,13 @@ class EmpresaAlertHandler:
                 if self.mqtt_publisher.connect():
                     self.logger.info("✅ MQTT Publisher conectado desde Empresa Handler")
                 else:
-                    self.logger.warning("⚠️ Error conectando MQTT Publisher en Empresa Handler")
-                    self.mqtt_publisher = None
+                    # NO descartar el publisher: paho reconecta solo y
+                    # ensure_connected() reintenta antes de cada publicación.
+                    self.logger.critical(
+                        "🚨 MQTT Publisher (Empresa Handler) sin conexión inicial a %s:%s — "
+                        "el hardware no recibirá comandos hasta que reconecte",
+                        config.mqtt.broker, config.mqtt.port
+                    )
             except Exception as e:
                 self.logger.error(f"❌ Error iniciando MQTT Publisher en Empresa Handler: {e}")
                 self.mqtt_publisher = None
@@ -102,7 +107,7 @@ class EmpresaAlertHandler:
 
             # Dedup: si esta alert_id ya se procesó hace menos de TTL segundos, skip.
             # Evita fanout duplicado cuando backend dispara vía WebSocket y HTTP a la vez.
-            if not self._claim_activation(str(alert_id)):
+            if not self._claim_event("activation", str(alert_id)):
                 self.logger.warning(
                     f"⏭️ Activación duplicada ignorada (alert_id={alert_id}) — "
                     f"ya procesada hace menos de {self._ACTIVATION_DEDUP_TTL_SECONDS}s"
@@ -127,7 +132,26 @@ class EmpresaAlertHandler:
             self.logger.info(f"   🏢 Empresa: {empresa_nombre}")
             self.logger.info(f"   🏛️ Sede: {sede}")
 
-            # 1. Fanout de notificaciones vía modelo OOP (plantilla / mapa / patch managers)
+            # 1. HARDWARE PRIMERO: es el consumidor crítico y de segundos.
+            # Antes iba después de WhatsApp y cache, dentro del mismo try: cualquier
+            # fallo de la API de WhatsApp cancelaba en silencio la activación física.
+            mqtt_success = True
+            if topics_hardware:
+                try:
+                    mqtt_success = self._send_mqtt_activation_commands(
+                        topics_hardware=topics_hardware,
+                        alert_data=alert_data
+                    )
+                except Exception as exc:
+                    mqtt_success = False
+                    self.logger.error(f"❌ Error enviando comandos MQTT de activación: {exc}")
+            else:
+                self.logger.warning(
+                    "⚠️ Alerta %s sin topics_otros_hardware: ningún dispositivo será activado",
+                    alert_id
+                )
+
+            # 2. Fanout de notificaciones vía modelo OOP (plantilla / mapa / patch managers)
             template_success = True
             manager_notify_success = True
             activacion_alerta = alert_data.get("activacion_alerta", {})
@@ -156,13 +180,18 @@ class EmpresaAlertHandler:
                 if u.get("numero")
             ]
 
-            # Fanout de mensajes polimórfico
+            # Fanout de mensajes polimórfico. Un fallo por usuario no debe tumbar
+            # al resto del fanout ni las etapas siguientes.
             for user in alert_users:
-                for msg_type in BROADCAST_MESSAGE_TYPES:
-                    if msg_type.can_receive(user):
-                        msg_type.send(user, self.whatsapp_service, alert_data, self.logger)
-                # Ciclo de vida del cache
-                user.on_alert_broadcast(self.whatsapp_service)
+                try:
+                    for msg_type in BROADCAST_MESSAGE_TYPES:
+                        if msg_type.can_receive(user):
+                            msg_type.send(user, self.whatsapp_service, alert_data, self.logger)
+                    # Ciclo de vida del cache
+                    user.on_alert_broadcast(self.whatsapp_service)
+                except Exception as exc:
+                    template_success = False
+                    self.logger.error(f"❌ Error en fanout WhatsApp para {user.phone}: {exc}")
 
             # Backend log de plantillas (no creators) — incluye nombre + usuario_id
             # para que el front pueda mostrar "Contactos Notificados" con datos completos.
@@ -184,31 +213,25 @@ class EmpresaAlertHandler:
                     summary_body=f"Plantilla crear_alerta enviada (alerta {alert_name})"
                 )
 
-            # 2. Crear cache masivo para usuarios de la sede.
+            # 3. Crear cache masivo para usuarios de la sede.
             # Incluye managers que también son miembros de sede (dual-role o managers
             # propios de esta sede): su foco ES esta alerta. Solo managers PURE cross-sede
             # quedan fuera, manejados por ManagerLastNotifiedPatch en el fanout.
             cache_success = True
             if usuarios_normalizados:
-                cache_success = self._create_bulk_cache_empresa(
-                    alert_data=alert_data,
-                    usuarios=usuarios_normalizados
-                )
+                try:
+                    cache_success = self._create_bulk_cache_empresa(
+                        alert_data=alert_data,
+                        usuarios=usuarios_normalizados
+                    )
+                except Exception as exc:
+                    cache_success = False
+                    self.logger.error(f"❌ Error creando cache masivo: {exc}")
             else:
                 self.logger.info("ℹ️ No hay usuarios de sede para crear cache")
 
-            # 2b. Metadata managers ya manejada por ManagerLastNotifiedPatch en el fanout
+            # 3b. Metadata managers ya manejada por ManagerLastNotifiedPatch en el fanout
             # (crea entry si no existe, patch si existe). No hay block separado redundante.
-
-            # 3. Enviar comandos MQTT a dispositivos hardware
-            mqtt_success = True
-            if topics_hardware:
-                mqtt_success = self._send_mqtt_activation_commands(
-                    topics_hardware=topics_hardware,
-                    alert_data=alert_data
-                )
-            else:
-                self.logger.info("ℹ️ No hay hardware para activar por MQTT")
 
             # Actualizar estadísticas
             if template_success and cache_success and mqtt_success and manager_notify_success:
@@ -256,36 +279,64 @@ class EmpresaAlertHandler:
             self.logger.info(f"   🏢 Empresa: {empresa}")
             self.logger.info(f"   🏛️ Sede: {sede}")
 
-            # 1. Limpiar caché de usuarios afectados (usa alert_id + lista como fuentes)
-            cache_success = self._clean_users_cache_after_deactivation(usuarios, alert_id=str(alert_id))
+            # Dedup: backend (fanout HTTP) y navegador (WebSocket) pueden mandar
+            # la misma desactivación. Solo la primera apaga el hardware.
+            if not self._claim_event("deactivation", str(alert_id)):
+                self.logger.warning(
+                    f"⏭️ Desactivación duplicada ignorada (alert_id={alert_id}) — "
+                    f"ya procesada hace menos de {self._ACTIVATION_DEDUP_TTL_SECONDS}s"
+                )
+                return True
 
-            # 1b. Limpiar foco de managers que tenían esta alerta activa.
+            # 1. HARDWARE PRIMERO: apagar la alarma física no puede quedar detrás
+            # de la limpieza de cache ni de la API de WhatsApp.
+            try:
+                mqtt_success = self._send_mqtt_deactivation_commands(
+                    hardware_list=hardware_vinculado,
+                    prioridad=prioridad
+                )
+            except Exception as exc:
+                mqtt_success = False
+                self.logger.error(f"❌ Error enviando comandos MQTT de desactivación: {exc}")
+
+            # 2. Limpiar caché de usuarios afectados (usa alert_id + lista como fuentes)
+            try:
+                cache_success = self._clean_users_cache_after_deactivation(
+                    usuarios, alert_id=str(alert_id)
+                )
+            except Exception as exc:
+                cache_success = False
+                self.logger.error(f"❌ Error limpiando cache de usuarios: {exc}")
+
+            # 2b. Limpiar foco de managers que tenían esta alerta activa.
             # Sin esto, managers siguen mandando mensajes a una alarma cerrada (info_alert quedaba colgado).
-            self._clean_focused_managers_after_deactivation(
-                alert_id=str(alert_id),
-                nombre_alerta=alert_name,
-                sede=sede
-            )
+            try:
+                self._clean_focused_managers_after_deactivation(
+                    alert_id=str(alert_id),
+                    nombre_alerta=alert_name,
+                    sede=sede
+                )
+            except Exception as exc:
+                self.logger.error(f"❌ Error limpiando foco de managers: {exc}")
 
-            # 2. Enviar notificación WhatsApp a usuarios
-            whatsapp_success = self._send_empresa_deactivation_notification(
-                usuarios=usuarios,
-                alert_info={
-                    "id": alert_id,
-                    "nombre": alert_name,
-                    "empresa": empresa,
-                    "sede": sede,
-                    "timestamp": timestamp,
-                    "desactivado_por": desactivado_por
-                }
-            )
-            
-            # 3. Enviar comandos MQTT a dispositivos hardware
-            mqtt_success = self._send_mqtt_deactivation_commands(
-                hardware_list=hardware_vinculado,
-                prioridad=prioridad
-            )
-            
+            # 3. Enviar notificación WhatsApp a usuarios
+            try:
+                whatsapp_success = self._send_empresa_deactivation_notification(
+                    usuarios=usuarios,
+                    alert_info={
+                        "id": alert_id,
+                        "nombre": alert_name,
+                        "empresa": empresa,
+                        "sede": sede,
+                        "timestamp": timestamp,
+                        "desactivado_por": desactivado_por
+                    }
+                )
+            except Exception as exc:
+                whatsapp_success = False
+                self.logger.error(f"❌ Error enviando notificación de desactivación: {exc}")
+
+
             # Actualizar estadísticas
             if cache_success and whatsapp_success and mqtt_success:
                 self.processed_count += 1
@@ -501,7 +552,10 @@ class EmpresaAlertHandler:
     def _send_mqtt_deactivation_commands(self, hardware_list: List[Dict], prioridad: str) -> bool:
         """Enviar comandos de desactivación MQTT a dispositivos hardware"""
         if not self.mqtt_publisher:
-            self.logger.warning("⚠️ MQTT Publisher no disponible")
+            self.logger.critical(
+                "🚨 MQTT Publisher no disponible: %s dispositivos NO se apagarán",
+                len(hardware_list or [])
+            )
             return False
             
         if not hardware_list:
@@ -510,18 +564,23 @@ class EmpresaAlertHandler:
             
         try:
             success_count = 0
-            
+            expected_count = 0
+            failed_topics = []
+
             self.logger.info(f"🔄 Enviando comandos de desactivación MQTT a {len(hardware_list)} dispositivos")
-            
+
             for hardware in hardware_list:
                 topic = hardware.get("topic", "")
                 hardware_name = hardware.get("nombre", "Hardware desconocido")
                 hardware_id = hardware.get("id_origen", "N/A")
-                
+
                 if not topic:
+                    # Problema de configuración del hardware, no de publicación
                     self.logger.warning(f"⚠️ Hardware {hardware_name} no tiene topic definido")
                     continue
-                
+
+                expected_count += 1
+
                 # Usar el topic directamente (ya viene con la estructura completa)
                 # Solo agregar el pattern_topic si no lo tiene
                 if not topic.startswith(self.pattern_topic):
@@ -544,11 +603,18 @@ class EmpresaAlertHandler:
                     success_count += 1
                     self.logger.info(f"✅ Hardware desactivado: {hardware_name} ({hardware_id})")
                 else:
+                    failed_topics.append(full_topic)
                     self.logger.error(f"❌ Error desactivando hardware: {hardware_name} - Topic: {full_topic}")
-            
-            self.logger.info(f"📊 MQTT: {success_count}/{len(hardware_list)} dispositivos desactivados")
-            # Considerar éxito si: hardware fue procesado (aunque algunos no tengan topic)
-            # o si la lista venía sin hardware válido — no es fallo del flujo.
+
+            self.logger.info(f"📊 MQTT: {success_count}/{expected_count} dispositivos desactivados")
+
+            if failed_topics:
+                self.logger.error(
+                    "❌ Desactivación MQTT incompleta: %s de %s topics fallaron → %s",
+                    len(failed_topics), expected_count, failed_topics
+                )
+                return False
+
             return True
 
         except Exception as e:
@@ -814,7 +880,10 @@ class EmpresaAlertHandler:
     def _send_mqtt_activation_commands(self, topics_hardware: List[str], alert_data: Dict) -> bool:
         """Enviar comandos de activación MQTT a dispositivos hardware (similar a MQTT handler)"""
         if not self.mqtt_publisher:
-            self.logger.warning("⚠️ MQTT Publisher no disponible")
+            self.logger.critical(
+                "🚨 MQTT Publisher no disponible: %s dispositivos NO se activarán",
+                len(topics_hardware or [])
+            )
             return False
             
         if not topics_hardware:
@@ -823,9 +892,10 @@ class EmpresaAlertHandler:
             
         try:
             success_count = 0
-            
+            failed_topics = []
+
             self.logger.info(f"🔄 Enviando comandos de activación MQTT a {len(topics_hardware)} dispositivos")
-            
+
             for topic in topics_hardware:
                 # Construir topic completo igual que en MQTT handler
                 full_topic = f"{self.pattern_topic}/{topic}"
@@ -841,10 +911,20 @@ class EmpresaAlertHandler:
                     hardware_name = topic.split("/")[-1] if "/" in topic else topic
                     self.logger.info(f"✅ Hardware activado: {hardware_name}")
                 else:
+                    failed_topics.append(full_topic)
                     self.logger.error(f"❌ Error activando hardware: {topic}")
-            
+
             self.logger.info(f"📊 MQTT: {success_count}/{len(topics_hardware)} dispositivos activados")
-            return success_count > 0
+
+            if failed_topics:
+                self.logger.error(
+                    "❌ Activación MQTT incompleta: %s de %s topics fallaron → %s",
+                    len(failed_topics), len(topics_hardware), failed_topics
+                )
+
+            # Éxito solo si TODOS publicaron. Antes bastaba con uno (success_count > 0)
+            # y una activación parcial se reportaba como correcta.
+            return success_count == len(topics_hardware)
             
         except Exception as e:
             self.logger.error(f"❌ Error enviando comandos de activación MQTT: {e}")
@@ -995,13 +1075,21 @@ class EmpresaAlertHandler:
         except Exception as ex:
             self.logger.error(f"Error en _clean_focused_managers_after_deactivation: {ex}")
 
-    def _claim_activation(self, alert_id: str) -> bool:
-        """Reserva una activación de alert_id. Retorna True si es la primera vez en TTL,
+    def _claim_event(self, kind: str, alert_id: str) -> bool:
+        """Reserva un evento (kind, alert_id). Retorna True si es la primera vez en TTL,
         False si ya se procesó recientemente (duplicado a ignorar). Thread-safe.
-        Limpia entradas viejas oportunísticamente para no crecer indefinidamente."""
+        Limpia entradas viejas oportunísticamente para no crecer indefinidamente.
+
+        kind: 'activation' | 'deactivation'. Se dedupan por separado para que
+        apagar una alerta recién creada no se confunda con su activación.
+
+        Nota: el estado es local al proceso. Con más de una réplica hay que
+        respaldarlo en Redis (SET NX EX), ver plan Fase C.
+        """
         if not alert_id or alert_id == "N/A":
             return True  # Sin id, no se puede dedup → procesar
         import time
+        key = f"{kind}:{alert_id}"
         now = time.time()
         ttl = self._ACTIVATION_DEDUP_TTL_SECONDS
         with self._dedup_lock:
@@ -1009,10 +1097,10 @@ class EmpresaAlertHandler:
             expired = [k for k, t in self._activation_dedup.items() if now - t > ttl]
             for k in expired:
                 self._activation_dedup.pop(k, None)
-            last = self._activation_dedup.get(alert_id)
+            last = self._activation_dedup.get(key)
             if last is not None and (now - last) <= ttl:
                 return False
-            self._activation_dedup[alert_id] = now
+            self._activation_dedup[key] = now
             return True
 
     def _log_template_sends(self, alert_id, template_name: str, recipients: List[Dict], summary_body: str) -> None:

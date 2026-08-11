@@ -54,8 +54,13 @@ class WebSocketMessageHandler:
                 if self.mqtt_publisher.connect():
                     self.logger.info("✅ MQTT Publisher conectado desde WebSocket handler")
                 else:
-                    self.logger.warning("⚠️ Error conectando MQTT Publisher")
-                    self.mqtt_publisher = None
+                    # NO descartar el publisher: paho reconecta solo y
+                    # ensure_connected() reintenta antes de cada publicación.
+                    self.logger.critical(
+                        "🚨 MQTT Publisher (WebSocket handler) sin conexión inicial a %s:%s — "
+                        "el hardware no recibirá comandos hasta que reconecte",
+                        config.mqtt.broker, config.mqtt.port
+                    )
             except Exception as e:
                 self.logger.error(f"❌ Error iniciando MQTT Publisher: {e}")
                 self.mqtt_publisher = None
@@ -2133,9 +2138,12 @@ class WebSocketMessageHandler:
                     self.logger.error(f"❌ Error enviando mensaje MQTT a topic: {topic}")
                     return False
             else:
-                self.logger.warning(f"⚠️ No hay cliente MQTT publisher disponible")
+                self.logger.critical(
+                    "🚨 No hay cliente MQTT publisher: el hardware NO recibió el mensaje de %s",
+                    topic
+                )
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"❌ Error enviando mensaje MQTT: {e}")
             return False
@@ -2293,17 +2301,32 @@ class WebSocketMessageHandler:
             )
             return False
    
-    def _intermediate_to_mqtt(self,topics,alert) -> None:
+    def _intermediate_to_mqtt(self, topics, alert) -> Dict[str, Any]:
+        """Publicar la activación a cada hardware. Devuelve un reporte para que
+        el fallo se pueda ver arriba en lugar de perderse."""
+        report = {"attempted": 0, "published": 0, "failed": []}
         try:
             #print(json.dumps(alert,indent=4))
             #enviar alerta a mqtt
             for topic in topics:
                 topic = self.pattern_topic + "/" + topic
+                report["attempted"] += 1
                 message_hardware = self._select_data_hardware(alert=alert,topic=topic)
-                self._send_mqtt_message(message_data=message_hardware,topic=topic)
+                if self._send_mqtt_message(message_data=message_hardware,topic=topic):
+                    report["published"] += 1
+                else:
+                    report["failed"].append(topic)
+
+            if report["failed"]:
+                self.logger.error(
+                    "❌ Activación MQTT incompleta: %s/%s publicados, fallaron %s",
+                    report["published"], report["attempted"], report["failed"]
+                )
 
         except Exception as ex:
             self.logger.error(f"Error en el intermedario a enviar mensajes al mqtt {ex}")
+
+        return report
 
     def _select_data_hardware(self, topic, alert:Dict) -> Dict:
         """Seleccionar datos específicos según el tipo de hardware"""
@@ -2340,28 +2363,41 @@ class WebSocketMessageHandler:
             
         return message_data
 
-    def _send_deactivation_to_mqtt(self, topics: list, prioridad: str) -> None:
-        """Enviar comandos de desactivación MQTT a dispositivos hardware"""
+    def _send_deactivation_to_mqtt(self, topics: list, prioridad: str) -> Dict[str, Any]:
+        """Enviar comandos de desactivación MQTT a dispositivos hardware.
+        Devuelve un reporte con lo publicado y lo fallido."""
+        report = {"attempted": 0, "published": 0, "failed": []}
         try:
             self.logger.info(f"🔄 Enviando comandos de desactivación MQTT a {len(topics)} dispositivos")
-            
+
             for topic in topics:
                 # Agregar pattern_topic igual que en activación
                 full_topic = self.pattern_topic + "/" + topic
-                
+                report["attempted"] += 1
+
                 # Crear mensaje de desactivación según el tipo de dispositivo
                 deactivation_message = self._create_deactivation_message(topic=topic, prioridad=prioridad)
-                
+
                 # Enviar mensaje MQTT con el topic completo
                 success = self._send_mqtt_message(message_data=deactivation_message, topic=full_topic)
-                
+
                 if success:
-                    self.logger.info(f"✅ Dispositivo desactivado: {topic.split('/')[-1]} ({topic.split('/')[-2]})")
+                    report["published"] += 1
+                    self.logger.info(f"✅ Dispositivo desactivado: {topic.split('/')[-1]}")
                 else:
+                    report["failed"].append(full_topic)
                     self.logger.error(f"❌ Error desactivando dispositivo: {topic}")
-                    
+
+            if report["failed"]:
+                self.logger.error(
+                    "❌ Desactivación MQTT incompleta: %s/%s publicados, fallaron %s",
+                    report["published"], report["attempted"], report["failed"]
+                )
+
         except Exception as ex:
             self.logger.error(f"❌ Error enviando comandos de desactivación MQTT: {ex}")
+
+        return report
     
     def _create_deactivation_message(self, topic: str, prioridad: str) -> Dict:
         """Crear mensaje de desactivación específico según el tipo de dispositivo"""
@@ -2405,6 +2441,22 @@ class WebSocketMessageHandler:
             return success
         except Exception as e:
             self.logger.error(f"❌ Error en trigger_fanout: {e}")
+            return False
+
+    def trigger_alert_event(self, message_data: Dict) -> bool:
+        """Procesar un evento de alerta llegado por HTTP interno desde RescueBack.
+
+        Hoy se usa para la desactivación (`alert_deactivated_by_empresa`), que
+        antes dependía de que el navegador mandara el mensaje por WebSocket.
+        """
+        try:
+            self.logger.info(
+                "🌐 Evento de alerta recibido por HTTP interno: %s",
+                message_data.get("type", "desconocido")
+            )
+            return self._handle_empresa_message_sync(message_data)
+        except Exception as e:
+            self.logger.error(f"❌ Error en trigger_alert_event: {e}")
             return False
 
     def _handle_create_empresa_alert_sync(self, message_data: Dict) -> bool:
