@@ -17,6 +17,7 @@ services:
       - MQTT_TLS=${MQTT_TLS}
       - BACKEND_URL=${BACKEND_URL}
       - BACKEND_API_KEY=${BACKEND_API_KEY}
+      - BACKEND_INTERNAL_TOKEN_HEADER=${BACKEND_INTERNAL_TOKEN_HEADER:-X-Internal-Token}
       - BACKEND_TIMEOUT=${BACKEND_TIMEOUT}
       - BACKEND_RETRY_ATTEMPTS=${BACKEND_RETRY_ATTEMPTS}
       - BACKEND_RETRY_DELAY=${BACKEND_RETRY_DELAY}
@@ -47,8 +48,11 @@ services:
     build: .
     container_name: rescue-websocket
     command: ["python", "websocket_service.py"]
+    # El navegador del Next local necesita alcanzar el canal realtime. El puerto
+    # HTTP interno 8081 permanece accesible solo entre contenedores.
+    ports:
+      - "${WEBSOCKET_BIND_ADDRESS:-127.0.0.1}:${WEBSOCKET_HOST_PORT:-8080}:8080"
     expose:
-      - "8080"
       - "8081"
     environment:
       # MQTT: este servicio publica a los semáforos/pantallas en las alertas de
@@ -71,6 +75,7 @@ services:
       - WEBSOCKET_PING_TIMEOUT=${WEBSOCKET_PING_TIMEOUT}
       - BACKEND_URL=${BACKEND_URL}
       - BACKEND_API_KEY=${BACKEND_API_KEY}
+      - BACKEND_INTERNAL_TOKEN_HEADER=${BACKEND_INTERNAL_TOKEN_HEADER:-X-Internal-Token}
       - BACKEND_TIMEOUT=${BACKEND_TIMEOUT}
       - WHATSAPP_API_URL=${WHATSAPP_API_URL}
       - WHATSAPP_API_TIMEOUT=${WHATSAPP_API_TIMEOUT}

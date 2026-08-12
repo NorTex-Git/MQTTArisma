@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any
 from handlers.websocket_message_handler import WebSocketMessageHandler
 from clients.backend_client import BackendClient
 from config import AppConfig
+from clients.realtime_hub import RealtimeHub
 
 class WebSocketServer:
     """Servidor WebSocket puro - SOLO para WhatsApp, sin dependencias MQTT"""
@@ -37,6 +38,7 @@ class WebSocketServer:
         self.server = None
         self.logger = logging.getLogger(__name__)
         self.is_running = False
+        self.realtime_hub = RealtimeHub(self.config)
         
         # Estadísticas solo para WhatsApp
         self.stats = {
@@ -51,6 +53,10 @@ class WebSocketServer:
     async def handle_client(self, websocket):
         """Manejar conexión de cliente"""
         self.logger.info(f"Cliente conectado desde {websocket.remote_address}")
+
+        if websocket.path.startswith('/realtime'):
+            await self.realtime_hub.handle_client(websocket)
+            return
         
         try:
             async for message in websocket:
@@ -68,6 +74,7 @@ class WebSocketServer:
         """Iniciar el servidor WebSocket"""
         self.logger.info(f"Iniciando servidor WebSocket en ws://{self.host}:{self.port}")
         
+        self.realtime_hub.start(asyncio.get_running_loop())
         self.server = await websockets.serve(
             self.handle_client,
             self.host,
@@ -85,6 +92,7 @@ class WebSocketServer:
         """Detener el servidor WebSocket"""
         self.logger.info("🛑 Deteniendo servidor WebSocket...")
         self.is_running = False
+        await self.realtime_hub.stop()
         
         if self.server:
             self.server.close()

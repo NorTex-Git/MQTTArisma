@@ -84,6 +84,24 @@ class WebSocketService:
 
             handler = self.websocket_server.message_handler
 
+            alert_for_event = payload.get("alert") if isinstance(payload.get("alert"), dict) else payload
+            raw_type = payload.get("type")
+            event_type = (
+                "alert.deactivated"
+                if raw_type == "alert_deactivated_by_empresa"
+                else "alert.created"
+            )
+            await self.websocket_server.realtime_hub.publish({
+                "type": event_type,
+                "empresaId": payload.get("empresa_id") or alert_for_event.get("empresa_id"),
+                "entityId": payload.get("alert_id") or alert_for_event.get("_id"),
+                "occurredAt": (
+                    alert_for_event.get("fecha_actualizacion")
+                    or alert_for_event.get("fecha_creacion")
+                ),
+                "payload": {"alert": alert_for_event},
+            })
+
             # Desactivación: el backend manda el evento completo con su `type`.
             # Antes este endpoint solo sabía de activaciones y habría tratado una
             # desactivación como si fuera una alerta nueva.
@@ -104,6 +122,20 @@ class WebSocketService:
         except Exception as e:
             self.logger.error(f"❌ Error en /internal/fanout-alert: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def _handle_realtime_event(self, request: web.Request) -> web.Response:
+        """Publicar eventos de dominio que no requieren fanout MQTT/WhatsApp."""
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict) or not payload.get("type"):
+                return web.json_response(
+                    {"success": False, "error": "type is required"}, status=400
+                )
+            await self.websocket_server.realtime_hub.publish(payload)
+            return web.json_response({"success": True})
+        except Exception as exc:
+            self.logger.error("Error publicando evento realtime: %s", exc)
+            return web.json_response({"success": False, "error": str(exc)}, status=500)
 
     def _get_publishers(self) -> dict:
         """Publishers MQTT vivos en este proceso, por nombre"""
@@ -135,6 +167,7 @@ class WebSocketService:
             if handler.empresa_handler:
                 payload["empresa_handler"] = handler.empresa_handler.get_statistics()
             payload["whatsapp"] = handler.get_whatsapp_statistics()
+            payload["realtime"] = self.websocket_server.realtime_hub.get_statistics()
         except Exception as e:
             payload["stats_error"] = str(e)
 
@@ -160,6 +193,7 @@ class WebSocketService:
         http_port = _internal_http_port()
         app = web.Application()
         app.router.add_post("/internal/fanout-alert", self._handle_fanout)
+        app.router.add_post("/internal/realtime-event", self._handle_realtime_event)
         app.router.add_get("/internal/status", self._handle_status)
         app.router.add_get("/health", self._handle_health)
         self._http_runner = web.AppRunner(app)

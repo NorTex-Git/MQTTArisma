@@ -75,6 +75,7 @@ class BackendConfig:
     """Configuración para conexión al backend"""
     base_url: str = _env("BACKEND_URL", "http://rescue-backend:5002")
     api_key: Optional[str] = os.getenv("BACKEND_API_KEY") or None
+    internal_token_header: str = _env("BACKEND_INTERNAL_TOKEN_HEADER", "X-Internal-Token")
     timeout: int = _env_int("BACKEND_TIMEOUT", 30)
     retry_attempts: int = _env_int("BACKEND_RETRY_ATTEMPTS", 3)
     retry_delay: int = _env_int("BACKEND_RETRY_DELAY", 5)
