@@ -51,7 +51,7 @@ services:
     # El navegador del Next local necesita alcanzar el canal realtime. El puerto
     # HTTP interno 8081 permanece accesible solo entre contenedores.
     ports:
-      - "${WEBSOCKET_BIND_ADDRESS:-127.0.0.1}:${WEBSOCKET_HOST_PORT:-8080}:8080"
+      - "${WEBSOCKET_BIND_ADDRESS:-127.0.0.1}:${WEBSOCKET_HOST_PORT:-8081}:8080"
     expose:
       - "8081"
     environment:
