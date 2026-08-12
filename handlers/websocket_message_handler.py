@@ -1101,6 +1101,13 @@ class WebSocketMessageHandler:
             
         usuario = verify_number.get("nombre", "")
 
+        # La clave de sesión debe ser el número que entrega WhatsApp (E.164 sin
+        # '+'), no el formato histórico guardado en RescueBack. Si el backend
+        # devuelve 310… pero el webhook llega como 57310…, guardar 310… hace que
+        # cada interacción posterior vuelva a entrar como usuario nuevo y el flujo
+        # nunca avance de la lista de alertas al mapa.
+        session_phone = number
+
         # Normalizar información de empresa (puede venir como string o dict)
         empresa_info = verify_number.get("empresa")
         empresa_id = verify_number.get("empresa_id")
@@ -1135,7 +1142,7 @@ class WebSocketMessageHandler:
         # Misma decisión de rol que _process_save_number, vía modelo OOP.
         # Usuario nuevo aún sin cache → snapshot mínimo desde verify_number.
         user_obj = make_whatsapp_user({
-            "phone": verify_number["telefono"],
+            "phone": session_phone,
             "name": usuario,
             "data": {"rol": normalized_role},
         })
@@ -1145,7 +1152,7 @@ class WebSocketMessageHandler:
         # Agregar número al cache de WhatsApp
         if self.whatsapp_service:
             response_verify = self.whatsapp_service.add_number_to_cache(
-                phone=verify_number["telefono"],           
+                phone=session_phone,
                 name=verify_number.get("nombre", ""),           
                 data={
                     "id": verify_number.get("id"),
@@ -1206,13 +1213,13 @@ class WebSocketMessageHandler:
         # antes de los fallbacks de menú.
         if entry and self._is_ver_detalles_tap(entry, entry.get("type", "")):
             target_alert_id = self._find_active_alert_for_user(
-                telefono=verify_number["telefono"],
+                telefono=session_phone,
                 usuario_id=verify_number.get("id", ""),
                 user_sede=sede_nombre,
             )
             if target_alert_id:
                 synthetic_cached_info = {
-                    "phone": verify_number["telefono"],
+                    "phone": session_phone,
                     "name": usuario,
                     "data": {
                         "id": verify_number.get("id"),
