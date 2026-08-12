@@ -42,7 +42,12 @@ class RealtimeHub:
                 db=self.config.redis.db,
                 password=self.config.redis.password,
                 decode_responses=True,
-                socket_timeout=3,
+                # Pub/Sub mantiene una lectura bloqueada durante toda la vida del
+                # servicio. Un timeout aquí mata el listener cuando pasan unos
+                # segundos sin eventos y deja los WebSockets conectados pero mudos.
+                socket_timeout=None,
+                socket_connect_timeout=3,
+                health_check_interval=30,
             )
             self.redis_client.ping()
             self.pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
