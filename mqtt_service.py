@@ -85,7 +85,7 @@ class MQTTService:
         )
         
         # Monitor de vida: detecta inactividad por expiración de claves Redis y marca
-        # el hardware Inactivo al instante (sin esperar al barrido del backend).
+        # el hardware Inactivo al instante.
         self.liveness_monitor = HardwareLivenessMonitor(self.config.redis, self.backend_client)
 
         # Estado del servicio
@@ -105,7 +105,7 @@ class MQTTService:
     def _setup_mqtt_callbacks(self):
         """Configurar callbacks para el cliente MQTT receptor"""
         
-        def mqtt_message_callback(topic, payload, json_data):
+        def mqtt_message_callback(topic, payload, json_data, retained=False):
             """Callback para procesar mensajes MQTT recibidos"""
             self.message_count += 1
             # A DEBUG: ahora se reciben los heartbeats de todos los dispositivos (~cada 2s),
@@ -114,7 +114,12 @@ class MQTTService:
             self.logger.debug(f"🎉 MENSAJE MQTT #{self.message_count} - TOPIC: {topic}")
 
             try:
-                success = self.message_handler.process_mqtt_message(topic, payload, json_data)
+                success = self.message_handler.process_mqtt_message(
+                    topic,
+                    payload,
+                    json_data,
+                    retained=retained,
+                )
 
                 if success:
                     self.logger.debug(f"✅ Mensaje MQTT #{self.message_count} procesado exitosamente")
@@ -162,6 +167,10 @@ class MQTTService:
         self.logger.info(f"📋 Topic base: {self.config.mqtt.topic}")
         
         try:
+            if self.message_handler._alive_redis is None:
+                self.logger.error("Redis no disponible para renovar la vida del hardware")
+                return False
+
             # Conectar MQTT Publisher
             if not self.mqtt_publisher.connect():
                 self.logger.error("❌ Error conectando MQTT Publisher")
@@ -177,12 +186,14 @@ class MQTTService:
                 self.logger.error("❌ Error conectando MQTT Receiver")
                 return False
             
-            # Iniciar loop del receptor
-            self.mqtt_receiver.start_loop()
-
             # Arrancar el monitor de vida (expiración de claves Redis → Inactivo instantáneo)
-            self.liveness_monitor.start()
+            if not self.liveness_monitor.start():
+                self.logger.error("No se pudo iniciar el monitor de vida del hardware")
+                self.stop()
+                return False
 
+            # Solo empezar a recibir cuando el monitor de expiraciones ya está listo.
+            self.mqtt_receiver.start_loop()
             self.is_running = True
             
             self.logger.info("✅ Servicio MQTT iniciado correctamente")

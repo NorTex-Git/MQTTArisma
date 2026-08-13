@@ -10,7 +10,7 @@ import sys
 import os
 import logging
 import json
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import web
 
 # Agregar el directorio actual al path para las importaciones
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -244,20 +244,17 @@ class WebSocketService:
         try:
             # Iniciar tarea de estadísticas periódicas
             stats_task = asyncio.create_task(self._show_statistics_periodically())
-            hardware_sweep_task = asyncio.create_task(self._sweep_hardware_status_periodically())
             
             try:
                 # Mantener el servidor corriendo indefinidamente
                 await asyncio.Future()
             finally:
                 # Cancelar tarea de estadísticas
-                for task in (stats_task, hardware_sweep_task):
-                    task.cancel()
-                for task in (stats_task, hardware_sweep_task):
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                stats_task.cancel()
+                try:
+                    await stats_task
+                except asyncio.CancelledError:
+                    pass
                     
         except KeyboardInterrupt:
             self.logger.info("Interrupción del usuario detectada")
@@ -312,34 +309,6 @@ class WebSocketService:
             except Exception as e:
                 self.logger.warning(f"⚠️ Error mostrando estadísticas WebSocket: {e}")
     
-    async def _sweep_hardware_status_periodically(self):
-        """Ask RescueBack to persist and publish expired hardware heartbeats."""
-        interval = max(10, _env_int("HARDWARE_STATUS_SWEEP_INTERVAL", 30))
-        headers = (
-            {self.config.backend.internal_token_header: self.config.backend.api_key}
-            if self.config.backend.api_key
-            else {}
-        )
-        url = f"{self.config.backend.base_url}/api/hardware/physical-status/sweep"
-        timeout = ClientTimeout(total=min(max(self.config.backend.timeout, 5), 30))
-
-        while self.is_running:
-            try:
-                await asyncio.sleep(interval)
-                async with ClientSession(timeout=timeout) as session:
-                    async with session.post(url, headers=headers) as response:
-                        if response.status != 200:
-                            body = await response.text()
-                            self.logger.warning(
-                                "Barrido de hardware rechazado: HTTP %s %s",
-                                response.status,
-                                body[:300],
-                            )
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                self.logger.warning("No se pudo ejecutar el barrido de hardware: %s", exc)
-
     async def _show_final_statistics(self):
         """Mostrar estadísticas finales"""
         if self.websocket_server:

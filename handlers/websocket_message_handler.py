@@ -393,6 +393,30 @@ class WebSocketMessageHandler:
     def _digits(value):
         return ''.join(ch for ch in str(value or '') if ch.isdigit())
 
+    def _handle_reaction(self, entry, number, user, alert_id) -> None:
+        """Reacción entrante: la registra en el panel (autor correcto) y la replica al
+        WhatsApp de los demás miembros (a su copia del mensaje). Emoji vacío = quitar."""
+        try:
+            reaction = entry.get("reaction") or {}
+            target_wamid = reaction.get("message_id")
+            emoji = reaction.get("emoji", "")
+            if not alert_id or not target_wamid or not self.backend_client:
+                return
+            # 1) Panel: registrar la reacción con el autor real.
+            self.backend_client.apply_reaction(alert_id, target_wamid, number, user, emoji)
+            # 2) Grupo: reaccionar en la copia del mensaje de cada otro miembro.
+            context_map = self.backend_client.get_message_context_map(alert_id, target_wamid) or {}
+            norm_self = self._digits(number)
+            for phone_digits, wamid in context_map.items():
+                if phone_digits == norm_self or not wamid:
+                    continue
+                try:
+                    self.whatsapp_service.send_reaction(phone_digits, wamid, emoji)
+                except Exception:
+                    continue
+        except Exception as ex:
+            self.logger.error(f"Error manejando reacción: {ex}")
+
     def _quoted_context_map(self, alert_id, entry):
         """Si `entry` es una respuesta (tiene context.id), devuelve el mapa
         {digits(phone): wamid} del mensaje citado para reenviar con reply nativo."""
@@ -486,6 +510,12 @@ class WebSocketMessageHandler:
         user_obj = make_whatsapp_user(cached_info, alert_id=current_alert_id)
         is_creator = user_obj.is_creator        # alias de compatibilidad
         is_alert_manager = user_obj.is_manager  # alias de compatibilidad
+
+        # Reacción: se adjunta a la burbuja del mensaje (no se registra como mensaje).
+        if type_message == "reaction":
+            self._handle_reaction(entry, number, user, current_alert_id)
+            return
+
         # Log IN: registrar mensaje entrante si hay alerta asociada al usuario
         try:
             current_alert_id = (exist_alert.get("info_alert") or {}).get("alert_id")

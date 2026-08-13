@@ -163,6 +163,16 @@ class WhatsAppClient:
             self.logger.error(f"Error reenviando media: {e}")
             return None
 
+    def send_reaction(self, phone: str, message_id: str, emoji: str = "") -> Optional[Dict]:
+        """Reacciona a un mensaje por su wamid (emoji vacío = quitar)."""
+        try:
+            phone_clean = self._clean_phone_number(phone)
+            data = {"phone": phone_clean, "message_id": message_id, "emoji": emoji or ""}
+            return self.post('/api/send-reaction', data=data)
+        except Exception as e:
+            self.logger.error(f"Error enviando reacción: {e}")
+            return None
+
     def send_bulk_individual(self, recipients: List[Dict], use_queue: bool = True) -> Optional[Dict]:
         """
         Enviar mensajes individuales masivos usando el endpoint send-bulk

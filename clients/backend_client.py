@@ -201,8 +201,8 @@ class BackendClient:
                              physical_status: Dict[str, Any]) -> bool:
         """Refresca la vida del hardware en el backend.
 
-        PUT /api/hardware/physical-status con token interno (mismo esquema que usa el
-        barrido en websocket_service: header `internal_token_header` con el api_key).
+        PUT /api/hardware/physical-status con token interno mediante el header
+        `internal_token_header` y el `api_key`.
         El backend pone `updated_at` y, si cambia, emite `hardware.status.changed`.
         """
         try:
@@ -596,6 +596,14 @@ class BackendClient:
                 pass
             time.sleep(0.6 * (attempt + 1))
         return False
+
+    def apply_reaction(self, alert_id: str, wamid: str, actor_phone: str, actor_name: str, emoji: str) -> Optional[Dict]:
+        """Registra una reacción entrante en el backend (por el wamid reaccionado)."""
+        try:
+            payload = {"wamid": wamid, "actor_phone": actor_phone, "actor_name": actor_name, "emoji": emoji or ""}
+            return self.post(f"/api/mqtt-alerts/{alert_id}/messages/reaction", data=payload)
+        except Exception:
+            return None
 
     def get_message_context_map(self, alert_id: str, quoted_wamid: str) -> Dict:
         """Mapa {digits(phone): wamid} del mensaje citado, para reenviar con reply nativo."""

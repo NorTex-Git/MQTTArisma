@@ -17,6 +17,36 @@ from utils.hardware_liveness_monitor import build_alive_key
 
 
 _DEDUP_WINDOW_SECONDS = 2
+_HARDWARE_REPORT_TYPES = {"heartbeat", "status", "estado", "alarma", "alarmas"}
+_HARDWARE_ID_FIELDS = ("id_dispositivo", "id_origen", "device_id", "hardware_id")
+
+
+def is_hardware_report(topic: str, data: Optional[Dict], retained: bool = False) -> bool:
+    """Return True only for telemetry that can be attributed to the device."""
+    if retained or not isinstance(data, dict):
+        return False
+
+    parts = [part for part in topic.split("/") if part.strip()]
+    if len(parts) != 5 or parts[0] != "empresas":
+        return False
+
+    message_type = str(data.get("tipo_mensaje") or "").strip().lower()
+    if message_type not in _HARDWARE_REPORT_TYPES:
+        return False
+
+    hardware = parts[4].strip()
+    identity = next(
+        (str(data.get(field)).strip() for field in _HARDWARE_ID_FIELDS if data.get(field)),
+        "",
+    )
+    if identity and identity.casefold() != hardware.casefold():
+        return False
+
+    # An alarm without device identity could be a command echoed by the broker.
+    if message_type in {"alarma", "alarmas"} and not identity:
+        return False
+
+    return True
 
 
 class MQTTMessageHandler:
@@ -40,20 +70,15 @@ class MQTTMessageHandler:
         self._last_processed: Dict[str, float] = {}
         self._dedup_lock = threading.Lock()
 
-        # Vida del hardware. Cada dispositivo late cada ~2s. Con Redis se usa una única
-        # clave `hw:alive:<empresa><SEP><hardware>` con TTL corto: el primer latido (o el
-        # regreso tras expirar) marca Activo en el backend; los siguientes solo refrescan
-        # el TTL. Cuando la clave expira (sin latidos), el HardwareLivenessMonitor la
-        # detecta y marca Inactivo al instante. Sin Redis se cae a un throttle en memoria
-        # (y el inactivo lo cubre el barrido del backend).
+        # Redis es la autoridad de vida: el primer reporte (o el regreso tras expirar)
+        # marca Activo; los siguientes solo renuevan el TTL. Al expirar, el monitor
+        # marca Inactivo.
         self._alive_ttl = getattr(config, "hardware_status_ttl_seconds", 30) if config else 30
         # Tipos que NO reportan vida (p. ej. PANTALLA: no es hardware, solo muestra).
         excluded_raw = getattr(config, "hardware_status_excluded_types", "PANTALLA") if config else "PANTALLA"
         self._alive_excluded_types = {
             item.strip().upper() for item in (excluded_raw or "").split(",") if item.strip()
         }
-        self._alive_local: Dict[str, float] = {}
-        self._alive_lock = threading.Lock()
         self._alive_redis = None
         try:
             import redis as _redis
@@ -71,20 +96,29 @@ class MQTTMessageHandler:
                 self.logger.info("✅ Vida por Redis activa (ttl=%ss)", self._alive_ttl)
         except Exception as exc:
             self._alive_redis = None
-            self.logger.warning(
-                "⚠️ Redis no disponible para throttle de vida (%s); se usa throttle en memoria", exc
-            )
+            self.logger.warning("⚠️ Redis no disponible para vida del hardware (%s)", exc)
 
         self.logger.info("🎯 MQTT Message Handler - SOLO procesamiento MQTT")
         self.logger.info("❌ SIN procesamiento de mensajes WhatsApp entrantes")
 
-    def process_mqtt_message(self, topic: str, payload: str, json_data: Optional[Dict] = None) -> bool:
+    def process_mqtt_message(
+        self,
+        topic: str,
+        payload: str,
+        json_data: Optional[Dict] = None,
+        retained: bool = False,
+    ) -> bool:
         """FILTRO ABSOLUTO PARA BOTONERA - Solo procesar topics que terminen después del hardware"""
 
-        # VIDA: cualquier mensaje de un dispositivo prueba que sigue vivo. Se refresca su
-        # physical_status en el backend (con throttle) sin importar el tipo de hardware.
-        # Va antes del filtro BOTONERA para cubrir SEMAFORO, PANTALLA, etc.
-        self._handle_liveness(topic)
+        if json_data is None and isinstance(payload, str):
+            try:
+                json_data = json.loads(payload)
+            except json.JSONDecodeError:
+                json_data = None
+
+        # Only device-originated telemetry renews liveness. Commands published by this
+        # service return through the wildcard too, but must not count as heartbeats.
+        self._handle_liveness(topic, json_data, retained=retained)
 
         # SOLO PROCESAR SI EL TOPIC CONTIENE "BOTONERA" Y TIENE MENSAJES APROPIADOS
         if "BOTONERA" in topic:
@@ -155,15 +189,21 @@ class MQTTMessageHandler:
             # No mostrar ni procesar otros topics
             return True
 
-    def _handle_liveness(self, topic: str) -> None:
-        """Refresca la vida del hardware a partir de su topic (con throttle).
+    def _handle_liveness(
+        self,
+        topic: str,
+        data: Optional[Dict],
+        retained: bool = False,
+    ) -> None:
+        """Renueva la vida únicamente a partir de un reporte atribuible al hardware.
 
         Topic esperado: empresas/<empresa>/<sede>/<TIPO>/<hardware>. El backend resuelve
         el hardware por empresa_nombre + hardware_nombre, así que se toman del topic.
         """
-        parts = [part for part in topic.split("/") if part.strip()]
-        if len(parts) < 5 or parts[0] != "empresas":
+        if not is_hardware_report(topic, data, retained=retained):
+            self.logger.debug("Mensaje MQTT ignorado para liveness topic=%s", topic)
             return
+        parts = [part for part in topic.split("/") if part.strip()]
         empresa = parts[1]
         tipo = parts[3]
         hardware = parts[-1]
@@ -184,22 +224,13 @@ class MQTTMessageHandler:
                     self._alive_redis.expire(key, self._alive_ttl)
                 return
             except Exception as exc:
-                self.logger.warning("⚠️ Redis vida falló (%s); fallback en memoria", exc)
+                self.logger.warning("⚠️ Redis vida falló (%s)", exc)
 
-        # Fallback sin Redis: throttle por proceso. El inactivo lo cubre el barrido.
-        if self._should_refresh_liveness_memory(empresa, hardware):
-            self._activate(empresa, hardware)
-
-    def _should_refresh_liveness_memory(self, empresa: str, hardware: str) -> bool:
-        """Throttle en memoria (fallback si no hay Redis): 1 vez por `_alive_ttl`."""
-        key = f"{empresa}/{hardware}"
-        now = time.time()
-        with self._alive_lock:
-            last = self._alive_local.get(key, 0)
-            if now - last < self._alive_ttl:
-                return False
-            self._alive_local[key] = now
-            return True
+        self.logger.error(
+            "Liveness ignorado: Redis no esta disponible empresa=%s hardware=%s",
+            empresa,
+            hardware,
+        )
 
     def _activate(self, empresa: str, hardware: str) -> None:
         """Marca el hardware Activo en el backend (en otro hilo, fuera del hilo MQTT)."""

@@ -125,13 +125,9 @@ class AppConfig:
     redis: RedisConfig = field(default_factory=RedisConfig)
     log_level: str = _env("LOG_LEVEL", "INFO")
     message_interval: int = _env_int("MESSAGE_INTERVAL", 20)
-    # Throttle de vida del hardware: cada dispositivo late cada ~2s, pero el backend
-    # solo necesita saber que sigue vivo. Se refresca physical-status como máximo una
-    # vez por dispositivo cada N segundos. El umbral de inactividad del backend es de
-    # 600s (HARDWARE_STATUS_STALE_SECONDS), así que 45s da margen de sobra.
     # Ventana de vida del hardware (TTL de la clave Redis `hw:alive:*`). Se refresca en
     # cada latido; si no llega ninguno en esta ventana, la clave expira y el monitor de
-    # expiración marca el hardware Inactivo al instante (sin esperar al barrido de 600s).
+    # expiración marca el hardware Inactivo al instante.
     # El hardware late cada ~2s, así que 30s aguanta ~15 latidos perdidos sin parpadear.
     hardware_status_ttl_seconds: int = _env_int("HARDWARE_STATUS_TTL_SECONDS", 30)
     # Tipos de dispositivo que NO llevan estado de vida (no son hardware físico

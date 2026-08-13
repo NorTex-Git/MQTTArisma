@@ -128,7 +128,7 @@ class MQTTClient:
             
             # Ejecutar callback personalizado si existe (siempre)
             if self.on_message_callback:
-                self.on_message_callback(topic, payload, json_data)
+                self.on_message_callback(topic, payload, json_data, bool(msg.retain))
                 
         except Exception as e:
             self.logger.error(f"💥 ERROR PROCESANDO MENSAJE: {e}")

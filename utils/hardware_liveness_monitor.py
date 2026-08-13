@@ -7,8 +7,7 @@ latido en la ventana— Redis emite un evento keyspace `expired`; aquí se captu
 y se marca el hardware como Inactivo en el backend de inmediato, que a su vez lo
 notifica al front por el canal realtime (Redis Pub/Sub) que ya existe.
 
-Reemplaza la latencia del barrido (hasta ~600s) por una detección ≈ TTL.
-El barrido del backend se mantiene solo como red de seguridad.
+Redis es la autoridad de liveness; no se necesita un barrido periódico del backend.
 """
 from __future__ import annotations
 
@@ -103,6 +102,15 @@ class HardwareLivenessMonitor:
 
     def _mark_inactive(self, empresa: str, hardware: str) -> None:
         try:
+            key = build_alive_key(empresa, hardware)
+            # An expiration event can race with a new device report. If the key has
+            # already reappeared, this is an obsolete event and must be discarded.
+            if self._client is not None and self._client.exists(key):
+                self._logger.info(
+                    "Expiracion obsoleta ignorada empresa=%s hardware=%s", empresa, hardware
+                )
+                return
+
             ok = self._backend_client.send_physical_status(
                 empresa, hardware, {"estado": "Inactivo"}
             )
@@ -113,6 +121,13 @@ class HardwareLivenessMonitor:
             else:
                 self._logger.warning(
                     "No se pudo marcar inactivo empresa=%s hardware=%s", empresa, hardware
+                )
+
+            # If a report arrived while the inactive PUT was in flight, restore Active
+            # last so independent worker threads cannot leave the state inverted.
+            if ok and self._client is not None and self._client.exists(key):
+                self._backend_client.send_physical_status(
+                    empresa, hardware, {"estado": "Activo"}
                 )
         except Exception as exc:
             self._logger.error("Error marcando inactivo: %s", exc)
