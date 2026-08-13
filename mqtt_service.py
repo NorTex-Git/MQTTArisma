@@ -136,10 +136,12 @@ class MQTTService:
                 
                 # Suscribirse a TODOS los dispositivos: empresas/<empresa>/<sede>/<TIPO>/<hardware>.
                 # Un solo filtro (no dos que se solapen, que provocan entrega duplicada):
-                # cubre las alarmas BOTONERA (el handler las enruta por contenido) y la
-                # vida/heartbeat de cualquier hardware (SEMAFORO, PANTALLA, etc.).
+                # cubre las alarmas BOTONERA (5 niveles) y los reportes de status/heartbeat,
+                # que el firmware publica en 6 niveles agregando la IP
+                # (empresas/<emp>/<sede>/<TIPO>/<hw>/<ip>). `#` cubre ambos; el handler
+                # enruta por contenido y valida la estructura.
                 topics_to_subscribe = [
-                    "empresas/+/+/+/+",
+                    "empresas/#",
                 ]
                 
                 for topic in topics_to_subscribe:
