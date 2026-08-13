@@ -13,6 +13,7 @@ from utils.alert_normalizer import (
     build_tv_topic,
     normalize_alert_to_tv,
 )
+from utils.hardware_liveness_monitor import build_alive_key
 
 
 _DEDUP_WINDOW_SECONDS = 2
@@ -39,11 +40,13 @@ class MQTTMessageHandler:
         self._last_processed: Dict[str, float] = {}
         self._dedup_lock = threading.Lock()
 
-        # Throttle de vida del hardware. Cada dispositivo late cada ~2s; solo hace falta
-        # avisar al backend "sigue vivo" 1 vez cada N segundos. Se usa Redis (SET NX EX)
-        # para que sea consistente aunque haya varias réplicas del servicio; si Redis no
-        # está disponible, se cae a un throttle en memoria por proceso.
-        self._alive_ttl = getattr(config, "hardware_status_refresh_seconds", 45) if config else 45
+        # Vida del hardware. Cada dispositivo late cada ~2s. Con Redis se usa una única
+        # clave `hw:alive:<empresa><SEP><hardware>` con TTL corto: el primer latido (o el
+        # regreso tras expirar) marca Activo en el backend; los siguientes solo refrescan
+        # el TTL. Cuando la clave expira (sin latidos), el HardwareLivenessMonitor la
+        # detecta y marca Inactivo al instante. Sin Redis se cae a un throttle en memoria
+        # (y el inactivo lo cubre el barrido del backend).
+        self._alive_ttl = getattr(config, "hardware_status_ttl_seconds", 30) if config else 30
         # Tipos que NO reportan vida (p. ej. PANTALLA: no es hardware, solo muestra).
         excluded_raw = getattr(config, "hardware_status_excluded_types", "PANTALLA") if config else "PANTALLA"
         self._alive_excluded_types = {
@@ -65,7 +68,7 @@ class MQTTMessageHandler:
                     socket_connect_timeout=2,
                 )
                 self._alive_redis.ping()
-                self.logger.info("✅ Throttle de vida por Redis activo (ttl=%ss)", self._alive_ttl)
+                self.logger.info("✅ Vida por Redis activa (ttl=%ss)", self._alive_ttl)
         except Exception as exc:
             self._alive_redis = None
             self.logger.warning(
@@ -167,25 +170,29 @@ class MQTTMessageHandler:
         # Las pantallas (y demás tipos excluidos) no son hardware con vida: no se refrescan.
         if tipo.upper() in self._alive_excluded_types:
             return
-        if not self._should_refresh_liveness(empresa, hardware):
-            return
-        thread = threading.Thread(
-            target=self._refresh_liveness_thread, args=(empresa, hardware), daemon=True
-        )
-        thread.start()
 
-    def _should_refresh_liveness(self, empresa: str, hardware: str) -> bool:
-        """True como máximo una vez por dispositivo cada `_alive_ttl` segundos.
-
-        Con Redis usa `SET key 1 NX EX ttl`: solo el primer mensaje de la ventana gana.
-        Sin Redis, cae a un diccionario en memoria por proceso.
-        """
-        key = f"hw:alive:{empresa}/{hardware}"
         if self._alive_redis is not None:
+            key = build_alive_key(empresa, hardware)
             try:
-                return bool(self._alive_redis.set(key, "1", nx=True, ex=self._alive_ttl))
+                # SET NX EX: `added` es True solo si la clave no existía → primer latido o
+                # regreso tras expirar. Ese es el único momento en que hay que marcar Activo.
+                added = self._alive_redis.set(key, "1", nx=True, ex=self._alive_ttl)
+                if added:
+                    self._activate(empresa, hardware)
+                else:
+                    # Sigue vivo: refresca la ventana sin escribir al backend.
+                    self._alive_redis.expire(key, self._alive_ttl)
+                return
             except Exception as exc:
-                self.logger.warning("⚠️ Redis throttle falló (%s); fallback en memoria", exc)
+                self.logger.warning("⚠️ Redis vida falló (%s); fallback en memoria", exc)
+
+        # Fallback sin Redis: throttle por proceso. El inactivo lo cubre el barrido.
+        if self._should_refresh_liveness_memory(empresa, hardware):
+            self._activate(empresa, hardware)
+
+    def _should_refresh_liveness_memory(self, empresa: str, hardware: str) -> bool:
+        """Throttle en memoria (fallback si no hay Redis): 1 vez por `_alive_ttl`."""
+        key = f"{empresa}/{hardware}"
         now = time.time()
         with self._alive_lock:
             last = self._alive_local.get(key, 0)
@@ -193,6 +200,12 @@ class MQTTMessageHandler:
                 return False
             self._alive_local[key] = now
             return True
+
+    def _activate(self, empresa: str, hardware: str) -> None:
+        """Marca el hardware Activo en el backend (en otro hilo, fuera del hilo MQTT)."""
+        threading.Thread(
+            target=self._refresh_liveness_thread, args=(empresa, hardware), daemon=True
+        ).start()
 
     def _refresh_liveness_thread(self, empresa: str, hardware: str) -> None:
         """Envía el refresco de vida al backend (fuera del hilo MQTT)."""

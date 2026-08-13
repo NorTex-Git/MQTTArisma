@@ -19,6 +19,7 @@ from clients.backend_client import BackendClient
 from clients.mqtt_publisher_lite import MQTTPublisherLite
 from handlers.mqtt_message_handler import MQTTMessageHandler
 from services.whatsapp_service import WhatsAppService
+from utils.hardware_liveness_monitor import HardwareLivenessMonitor
 from utils.logger import setup_logger, setup_root_logging
 from config import AppConfig
 from config.settings import MQTTConfig
@@ -83,6 +84,10 @@ class MQTTService:
             config=self.config
         )
         
+        # Monitor de vida: detecta inactividad por expiración de claves Redis y marca
+        # el hardware Inactivo al instante (sin esperar al barrido del backend).
+        self.liveness_monitor = HardwareLivenessMonitor(self.config.redis, self.backend_client)
+
         # Estado del servicio
         self.is_running = False
         self.message_count = 0
@@ -174,6 +179,10 @@ class MQTTService:
             
             # Iniciar loop del receptor
             self.mqtt_receiver.start_loop()
+
+            # Arrancar el monitor de vida (expiración de claves Redis → Inactivo instantáneo)
+            self.liveness_monitor.start()
+
             self.is_running = True
             
             self.logger.info("✅ Servicio MQTT iniciado correctamente")
@@ -212,8 +221,12 @@ class MQTTService:
         """Detener el servicio MQTT"""
         self.logger.info("🛑 Deteniendo servicio MQTT...")
         self.is_running = False
-        
+
         try:
+            # Detener monitor de vida
+            if hasattr(self, 'liveness_monitor') and self.liveness_monitor:
+                self.liveness_monitor.stop()
+
             # Detener receptor MQTT
             if hasattr(self, 'mqtt_receiver') and self.mqtt_receiver:
                 self.mqtt_receiver.stop_loop()
