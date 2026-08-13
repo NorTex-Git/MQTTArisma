@@ -22,8 +22,9 @@ services:
       - BACKEND_RETRY_ATTEMPTS=${BACKEND_RETRY_ATTEMPTS}
       - BACKEND_RETRY_DELAY=${BACKEND_RETRY_DELAY}
       # Ventana de vida del hardware (TTL de hw:alive:* en Redis). Al expirar sin latidos,
-      # el monitor marca el hardware Inactivo al instante. Latido ~2s → 30s no parpadea.
-      - HARDWARE_STATUS_TTL_SECONDS=${HARDWARE_STATUS_TTL_SECONDS:-30}
+      # el monitor marca el hardware Inactivo. El heartbeat real (tipo_mensaje:status) es
+      # cada ~60-83s, así que 120s da margen (~2 latidos) para no parpadear.
+      - HARDWARE_STATUS_TTL_SECONDS=${HARDWARE_STATUS_TTL_SECONDS:-120}
       # Tipos sin estado de vida (no son hardware físico). PANTALLA solo muestra.
       - HARDWARE_STATUS_EXCLUDED_TYPES=${HARDWARE_STATUS_EXCLUDED_TYPES:-PANTALLA}
       - WHATSAPP_API_URL=${WHATSAPP_API_URL}
