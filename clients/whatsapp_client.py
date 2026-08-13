@@ -102,27 +102,30 @@ class WhatsAppClient:
             #print(f"💥 Error enviando mensaje de peticion de ubicaciion individual: {e}")
             self.logger.error(f"Error enviando mensaje de peticion de ubicaciion individual: {e}")
             return None
-    def send_individual_message(self, phone: str, message: str, use_queue: bool = False) -> Optional[Dict]:
+    def send_individual_message(self, phone: str, message: str, use_queue: bool = False, context_message_id: str = None) -> Optional[Dict]:
         """
         Enviar mensaje individual de WhatsApp
-        
+
         Args:
             phone: Número del destinatario (formato internacional, sin + ni espacios)
             message: Texto del mensaje
             use_queue: Si usar cola o no (opcional, default False)
-            
+            context_message_id: wamid a citar (reply nativo), opcional
+
         Returns:
             Dict con respuesta de la API o None si hay error
         """
         try:
             # Validar formato del número
             phone_clean = self._clean_phone_number(phone)
-            
+
             data = {
                 "phone": phone_clean,
                 "message": message,
                 "use_queue": use_queue
             }
+            if context_message_id:
+                data["context_message_id"] = context_message_id
             
             #print(f"📱 Enviando mensaje individual:")
             #print(f"   📞 Teléfono: {phone_clean}")
@@ -143,7 +146,7 @@ class WhatsAppClient:
             self.logger.error(f"Error enviando mensaje individual: {e}")
             return None
     
-    def send_media_by_id(self, phone: str, media_type: str, media_id: str, caption: str = "") -> Optional[Dict]:
+    def send_media_by_id(self, phone: str, media_type: str, media_id: str, caption: str = "", context_message_id: str = None) -> Optional[Dict]:
         """Reenvía una media entrante (image/audio/video/sticker) por su media_id."""
         try:
             phone_clean = self._clean_phone_number(phone)
@@ -153,6 +156,8 @@ class WhatsAppClient:
                 "media_id": media_id,
                 "caption": caption,
             }
+            if context_message_id:
+                data["context_message_id"] = context_message_id
             return self.post('/api/send-media', data=data)
         except Exception as e:
             self.logger.error(f"Error reenviando media: {e}")

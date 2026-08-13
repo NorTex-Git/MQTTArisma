@@ -93,6 +93,48 @@ class WhatsAppService:
             self.logger.error(f"Error en servicio WhatsApp: {e}")
             return False
     
+    @staticmethod
+    def _extract_wamid(response):
+        """wamid saliente desde la respuesta del servicio (data.messages[0].id)."""
+        try:
+            return response['data']['messages'][0]['id']
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    def send_text_wamid(self, phone: str, message: str, context_message_id: str = None):
+        """Envía texto individual y devuelve el wamid saliente (o None)."""
+        try:
+            if not self.config.enabled:
+                return None
+            response = self.client.send_individual_message(phone, message, context_message_id=context_message_id)
+            if response:
+                self.stats["individual_messages_sent"] += 1
+                self.stats["total_recipients"] += 1
+                return self._extract_wamid(response)
+            self.stats["errors"] += 1
+            return None
+        except Exception as e:
+            self.stats["errors"] += 1
+            self.logger.error(f"Error en send_text_wamid: {e}")
+            return None
+
+    def send_media_wamid(self, phone: str, media_type: str, media_id: str, caption: str = "", context_message_id: str = None):
+        """Reenvía media por id y devuelve el wamid saliente (o None)."""
+        try:
+            if not self.config.enabled:
+                return None
+            response = self.client.send_media_by_id(phone, media_type, media_id, caption, context_message_id=context_message_id)
+            if response:
+                self.stats["individual_messages_sent"] += 1
+                self.stats["total_recipients"] += 1
+                return self._extract_wamid(response)
+            self.stats["errors"] += 1
+            return None
+        except Exception as e:
+            self.stats["errors"] += 1
+            self.logger.error(f"Error en send_media_wamid: {e}")
+            return None
+
     def send_media_by_id(self, phone: str, media_type: str, media_id: str, caption: str = "") -> bool:
         """Reenvía una media entrante (image/audio/video/sticker) a un número por su media_id."""
         try:

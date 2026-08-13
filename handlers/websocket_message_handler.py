@@ -368,21 +368,57 @@ class WebSocketMessageHandler:
         if not str(ubicacion.get("direccion") or "").strip():
             ubicacion["direccion"] = "whatsapp"
 
-    def _send_bulk_text_message(self,body:str,list_users: list[Dict],name_made:str) -> bool:
-        try:
-            recipients = []
-            for user in list_users:
-                message = {
-                    "phone":user["numero"],
-                    "message" : f"*{name_made}*\n{body}"
-                }
-                recipients.append(message)
-            self.whatsapp_service.send_bulk_individual(recipients = recipients)
+    def _send_bulk_text_message(self, body: str, list_users: list[Dict], name_made: str, context_map=None):
+        """Reenvía texto 1:1 a cada miembro y devuelve [{phone, wa_message_id}].
 
+        Se envía por destinatario (no bulk) para capturar el wamid de cada copia, que
+        habilita el reply nativo de WhatsApp para todo el grupo. Si `context_map`, cada
+        miembro recibe el mensaje citando SU copia del mensaje respondido.
+        """
+        sent = []
+        try:
+            for user in list_users:
+                numero = user.get("numero")
+                if not numero:
+                    continue
+                ctx = context_map.get(self._digits(numero)) if context_map else None
+                wamid = self.whatsapp_service.send_text_wamid(numero, f"*{name_made}*\n{body}", context_message_id=ctx)
+                if wamid:
+                    sent.append({"phone": numero, "wa_message_id": wamid})
         except Exception as ex:
             self.logger.error(f"Error en _send_bulk_text_message {ex}")
-            return False
-    def _send_bulk_team(self,type_message:str,name_made:str,list_users:list[Dict],message)-> bool:
+        return sent
+
+    @staticmethod
+    def _digits(value):
+        return ''.join(ch for ch in str(value or '') if ch.isdigit())
+
+    def _quoted_context_map(self, alert_id, entry):
+        """Si `entry` es una respuesta (tiene context.id), devuelve el mapa
+        {digits(phone): wamid} del mensaje citado para reenviar con reply nativo."""
+        try:
+            quoted_id = (entry.get("context") or {}).get("id") if isinstance(entry, dict) else None
+            if not quoted_id or not self.backend_client:
+                return None
+            return self.backend_client.get_message_context_map(alert_id, quoted_id) or None
+        except Exception:
+            return None
+
+    def _report_relay_recipients(self, alert_id, origin_wamid, recipients) -> None:
+        """Adjunta (fire-and-forget) los wamids de reenvío al mensaje de origen."""
+        if not alert_id or not origin_wamid or not recipients or not self.backend_client:
+            return
+        import threading
+
+        def _fire():
+            try:
+                self.backend_client.report_message_recipients(alert_id, origin_wamid, recipients)
+            except Exception:
+                pass
+
+        threading.Thread(target=_fire, daemon=True).start()
+    def _send_bulk_team(self, type_message: str, name_made: str, list_users: list[Dict], message,
+                        alert_id=None, origin_wamid=None, context_map=None) -> bool:
         try:
             list_validate = [u for u in list_users if u["disponible"]]
             if not list_validate:
@@ -390,18 +426,21 @@ class WebSocketMessageHandler:
                 return True
             match type_message:
                 case "text":
-                    self._send_bulk_text_message(list_users=list_validate,body=message,name_made=name_made)
+                    sent = self._send_bulk_text_message(list_users=list_validate, body=message, name_made=name_made, context_map=context_map)
+                    self._report_relay_recipients(alert_id, origin_wamid, sent)
             return True
         except Exception as ex:
             self.logger.error(f"Error en _send_bulk_team {ex}")
             return False
 
     def _send_bulk_team_media(self, list_users: list[Dict], media_type: str, media_id: str,
-                              caption: str, name_made: str) -> bool:
+                              caption: str, name_made: str, alert_id=None, origin_wamid=None,
+                              context_map=None) -> bool:
         """Reenvía una media entrante (image/audio/video/sticker) al equipo disponible.
 
         Usa el media_id entrante directamente (envío inmediato, sin re-subir ni esperar
         al guardado). Para image/video el caption lleva el nombre de quien la envía.
+        Captura los wamids por miembro para habilitar el reply nativo grupal.
         """
         try:
             list_validate = [u for u in list_users if u.get("disponible")]
@@ -410,16 +449,22 @@ class WebSocketMessageHandler:
                 return True
             friendly = self._get_first_name(name_made) or name_made or "Equipo"
             full_caption = f"{friendly}: {caption}".strip(": ").strip() if caption else friendly
+            sent = []
             for usuario in list_validate:
                 numero = usuario.get("numero")
                 if not numero:
                     continue
-                self.whatsapp_service.send_media_by_id(
+                ctx = context_map.get(self._digits(numero)) if context_map else None
+                wamid = self.whatsapp_service.send_media_wamid(
                     phone=numero,
                     media_type=media_type,
                     media_id=media_id,
                     caption=full_caption,
+                    context_message_id=ctx,
                 )
+                if wamid:
+                    sent.append({"phone": numero, "wa_message_id": wamid})
+            self._report_relay_recipients(alert_id, origin_wamid, sent)
             return True
         except Exception as ex:
             self.logger.error(f"Error en _send_bulk_team_media {ex}")
@@ -705,6 +750,7 @@ class WebSocketMessageHandler:
                             empresa_id=cached_info.get("data", {}).get("empresa_id")
                         )
                         self._send_bulk_team(list_users=data_user_not_you,message="Estoy camino a la emergencia",name_made=user,type_message="text")
+                        # (aviso sintético "en camino": no es un mensaje citable, no se reporta)
                         self._log_action_to_alert(alert_id=id_alert, phone=number, user=user, action="EMBARCADO", user_id=id_user)
                     elif opcion == "CAMBIAR_ALERTA":
                         if not user_obj.can_cambiar_alerta():
@@ -757,6 +803,9 @@ class WebSocketMessageHandler:
                                         media_id=media_id,
                                         caption=caption,
                                         name_made=user,
+                                        alert_id=id_alert,
+                                        origin_wamid=entry.get("id"),
+                                        context_map=self._quoted_context_map(id_alert, entry),
                                     )
                                 else:
                                     self.logger.info("Media sin destinatarios de equipo")
@@ -812,7 +861,7 @@ class WebSocketMessageHandler:
                             data_alert = self.backend_client.get_alert_by_id(alert_id = id_alert,user_id=id_user).get("alert",{}) or {}
                             data_user = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") != number]
                             if data_user:
-                                self._send_bulk_team(name_made=user,message=body_text,list_users=data_user,type_message=type_message)
+                                self._send_bulk_team(name_made=user,message=body_text,list_users=data_user,type_message=type_message,alert_id=id_alert,origin_wamid=entry.get("id"),context_map=self._quoted_context_map(id_alert, entry))
                             else:
                                 self.logger.info("El mensaje no tiene destinatarios")
                 return
@@ -1688,6 +1737,9 @@ class WebSocketMessageHandler:
             if not subscribers:
                 return
 
+            # Si el usuario respondió a un mensaje, reenviar citando la copia de cada manager.
+            context_map = self._quoted_context_map(alert_id, entry)
+
             friendly_sender = self._get_first_name(sender_name) or sender_phone
             if sender_role:
                 forward_text = f"{friendly_sender} ({sender_role}): {body_text}"
@@ -1709,28 +1761,36 @@ class WebSocketMessageHandler:
             import threading
 
             def _fire():
+                sent = []
                 try:
                     for sub in subscribers:
                         manager_phone = sub.get("phone")
                         if not manager_phone or manager_phone == sender_phone:
                             continue
                         try:
+                            ctx = context_map.get(self._digits(manager_phone)) if context_map else None
                             if media_type and media_id:
-                                self.whatsapp_service.send_media_by_id(
+                                wamid = self.whatsapp_service.send_media_wamid(
                                     phone=manager_phone,
                                     media_type=media_type,
                                     media_id=media_id,
                                     caption=media_caption,
+                                    context_message_id=ctx,
                                 )
                             else:
-                                self.whatsapp_service.send_individual_message(
+                                wamid = self.whatsapp_service.send_text_wamid(
                                     phone=manager_phone,
-                                    message=forward_text
+                                    message=forward_text,
+                                    context_message_id=ctx,
                                 )
+                            if wamid:
+                                sent.append({"phone": manager_phone, "wa_message_id": wamid})
                         except Exception:
                             continue
                 except Exception:
                     pass
+                # Reportar los wamids de las copias a los managers para el reply nativo grupal.
+                self._report_relay_recipients(alert_id, entry.get("id") if isinstance(entry, dict) else None, sent)
 
             threading.Thread(target=_fire, daemon=True).start()
         except Exception as exc:

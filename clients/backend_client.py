@@ -4,7 +4,7 @@ Cliente para comunicación con el backend
 import json
 import logging
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -575,6 +575,39 @@ class BackendClient:
             return response if isinstance(response, dict) else None
         except Exception:
             return None
+
+    def report_message_recipients(self, alert_id: str, origin_wa_message_id: str,
+                                  recipients: List[Dict], retries: int = 3) -> bool:
+        """Adjunta los wamids de reenvío al mensaje de origen (para el reply nativo grupal).
+
+        Reintenta si el mensaje aún no persistió (el log es fire-and-forget).
+        """
+        import time
+        if not origin_wa_message_id or not recipients:
+            return False
+        payload = {'origin_wa_message_id': origin_wa_message_id, 'recipients': recipients}
+        for attempt in range(retries):
+            try:
+                response = self.post(f"/api/mqtt-alerts/{alert_id}/messages/recipients", data=payload)
+                if isinstance(response, dict) and response.get('_status_code') == 200:
+                    return True
+                # 404: el mensaje aún no está registrado → esperar y reintentar.
+            except Exception:
+                pass
+            time.sleep(0.6 * (attempt + 1))
+        return False
+
+    def get_message_context_map(self, alert_id: str, quoted_wamid: str) -> Dict:
+        """Mapa {digits(phone): wamid} del mensaje citado, para reenviar con reply nativo."""
+        try:
+            if not quoted_wamid:
+                return {}
+            response = self.get(f"/api/mqtt-alerts/{alert_id}/messages/context-map?wamid={quoted_wamid}")
+            if isinstance(response, dict) and isinstance(response.get('map'), dict):
+                return response['map']
+            return {}
+        except Exception:
+            return {}
 
     def get_alert_messages(self, alert_id: str, direction: Optional[str] = None, limit: int = 15) -> Optional[Dict]:
         """Lista mensajes de la conversación de una alerta"""
