@@ -21,6 +21,11 @@ services:
       - BACKEND_TIMEOUT=${BACKEND_TIMEOUT}
       - BACKEND_RETRY_ATTEMPTS=${BACKEND_RETRY_ATTEMPTS}
       - BACKEND_RETRY_DELAY=${BACKEND_RETRY_DELAY}
+      # Throttle de vida del hardware: 1 refresco de physical-status por dispositivo
+      # cada N segundos (umbral de inactividad del backend = 600s).
+      - HARDWARE_STATUS_REFRESH_SECONDS=${HARDWARE_STATUS_REFRESH_SECONDS:-45}
+      # Tipos sin estado de vida (no son hardware físico). PANTALLA solo muestra.
+      - HARDWARE_STATUS_EXCLUDED_TYPES=${HARDWARE_STATUS_EXCLUDED_TYPES:-PANTALLA}
       - WHATSAPP_API_URL=${WHATSAPP_API_URL}
       - WHATSAPP_API_TIMEOUT=${WHATSAPP_API_TIMEOUT}
       - REDIS_HOST=redis

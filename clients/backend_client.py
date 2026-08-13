@@ -197,6 +197,41 @@ class BackendClient:
             self.logger.error("❌ send_alarm_data excepción: %s", e)
             return None
     
+    def send_physical_status(self, empresa_nombre: str, hardware_nombre: str,
+                             physical_status: Dict[str, Any]) -> bool:
+        """Refresca la vida del hardware en el backend.
+
+        PUT /api/hardware/physical-status con token interno (mismo esquema que usa el
+        barrido en websocket_service: header `internal_token_header` con el api_key).
+        El backend pone `updated_at` y, si cambia, emite `hardware.status.changed`.
+        """
+        try:
+            url = f"{self.config.base_url.rstrip('/')}/api/hardware/physical-status"
+            headers = {}
+            if self.config.api_key:
+                headers[self.config.internal_token_header] = self.config.api_key
+            body = {
+                "empresa_nombre": empresa_nombre,
+                "hardware_nombre": hardware_nombre,
+                "physical_status": physical_status,
+            }
+            response = self.session.put(
+                url, json=body, headers=headers, timeout=self.config.timeout
+            )
+            if response.status_code == 200:
+                return True
+            self.logger.warning(
+                "physical-status PUT no OK (%s) empresa=%s hardware=%s: %s",
+                response.status_code, empresa_nombre, hardware_nombre, response.text[:200],
+            )
+            return False
+        except requests.exceptions.RequestException as e:
+            self.logger.error(
+                "❌ physical-status PUT error empresa=%s hardware=%s: %s",
+                empresa_nombre, hardware_nombre, e,
+            )
+            return False
+
     def health_check(self) -> bool:
         """Verificar que el backend esté disponible"""
         try:

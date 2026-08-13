@@ -103,16 +103,19 @@ class MQTTService:
         def mqtt_message_callback(topic, payload, json_data):
             """Callback para procesar mensajes MQTT recibidos"""
             self.message_count += 1
-            self.logger.info(f"🎉 MENSAJE MQTT #{self.message_count} - TOPIC: {topic}")
-            
+            # A DEBUG: ahora se reciben los heartbeats de todos los dispositivos (~cada 2s),
+            # loguear cada uno a INFO inundaría el archivo. Las alarmas BOTONERA y el refresco
+            # de vida (con throttle) sí se loguean en el handler.
+            self.logger.debug(f"🎉 MENSAJE MQTT #{self.message_count} - TOPIC: {topic}")
+
             try:
                 success = self.message_handler.process_mqtt_message(topic, payload, json_data)
-                
+
                 if success:
-                    self.logger.info(f"✅ Mensaje MQTT #{self.message_count} procesado exitosamente")
+                    self.logger.debug(f"✅ Mensaje MQTT #{self.message_count} procesado exitosamente")
                 else:
                     self.logger.error(f"❌ Error procesando mensaje MQTT #{self.message_count}")
-                    
+
             except Exception as e:
                 self.logger.error(f"❌ Excepción procesando mensaje MQTT: {e}")
         
@@ -121,9 +124,12 @@ class MQTTService:
             if rc == 0:
                 self.logger.info("🔥 Conectado exitosamente al broker MQTT")
                 
-                # Suscribirse SOLO a topics de BOTONERA física
+                # Suscribirse a TODOS los dispositivos: empresas/<empresa>/<sede>/<TIPO>/<hardware>.
+                # Un solo filtro (no dos que se solapen, que provocan entrega duplicada):
+                # cubre las alarmas BOTONERA (el handler las enruta por contenido) y la
+                # vida/heartbeat de cualquier hardware (SEMAFORO, PANTALLA, etc.).
                 topics_to_subscribe = [
-                    "empresas/+/+/BOTONERA/+",  # Solo BOTONERA física
+                    "empresas/+/+/+/+",
                 ]
                 
                 for topic in topics_to_subscribe:

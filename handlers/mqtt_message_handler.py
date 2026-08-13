@@ -39,12 +39,50 @@ class MQTTMessageHandler:
         self._last_processed: Dict[str, float] = {}
         self._dedup_lock = threading.Lock()
 
+        # Throttle de vida del hardware. Cada dispositivo late cada ~2s; solo hace falta
+        # avisar al backend "sigue vivo" 1 vez cada N segundos. Se usa Redis (SET NX EX)
+        # para que sea consistente aunque haya varias réplicas del servicio; si Redis no
+        # está disponible, se cae a un throttle en memoria por proceso.
+        self._alive_ttl = getattr(config, "hardware_status_refresh_seconds", 45) if config else 45
+        # Tipos que NO reportan vida (p. ej. PANTALLA: no es hardware, solo muestra).
+        excluded_raw = getattr(config, "hardware_status_excluded_types", "PANTALLA") if config else "PANTALLA"
+        self._alive_excluded_types = {
+            item.strip().upper() for item in (excluded_raw or "").split(",") if item.strip()
+        }
+        self._alive_local: Dict[str, float] = {}
+        self._alive_lock = threading.Lock()
+        self._alive_redis = None
+        try:
+            import redis as _redis
+            redis_config = getattr(config, "redis", None) if config else None
+            if redis_config is not None:
+                self._alive_redis = _redis.Redis(
+                    host=redis_config.host,
+                    port=redis_config.port,
+                    db=redis_config.db,
+                    password=redis_config.password,
+                    socket_timeout=2,
+                    socket_connect_timeout=2,
+                )
+                self._alive_redis.ping()
+                self.logger.info("✅ Throttle de vida por Redis activo (ttl=%ss)", self._alive_ttl)
+        except Exception as exc:
+            self._alive_redis = None
+            self.logger.warning(
+                "⚠️ Redis no disponible para throttle de vida (%s); se usa throttle en memoria", exc
+            )
+
         self.logger.info("🎯 MQTT Message Handler - SOLO procesamiento MQTT")
         self.logger.info("❌ SIN procesamiento de mensajes WhatsApp entrantes")
 
     def process_mqtt_message(self, topic: str, payload: str, json_data: Optional[Dict] = None) -> bool:
         """FILTRO ABSOLUTO PARA BOTONERA - Solo procesar topics que terminen después del hardware"""
-        
+
+        # VIDA: cualquier mensaje de un dispositivo prueba que sigue vivo. Se refresca su
+        # physical_status en el backend (con throttle) sin importar el tipo de hardware.
+        # Va antes del filtro BOTONERA para cubrir SEMAFORO, PANTALLA, etc.
+        self._handle_liveness(topic)
+
         # SOLO PROCESAR SI EL TOPIC CONTIENE "BOTONERA" Y TIENE MENSAJES APROPIADOS
         if "BOTONERA" in topic:
             topic_parts = topic.split("/")
@@ -113,6 +151,63 @@ class MQTTMessageHandler:
         else:
             # No mostrar ni procesar otros topics
             return True
+
+    def _handle_liveness(self, topic: str) -> None:
+        """Refresca la vida del hardware a partir de su topic (con throttle).
+
+        Topic esperado: empresas/<empresa>/<sede>/<TIPO>/<hardware>. El backend resuelve
+        el hardware por empresa_nombre + hardware_nombre, así que se toman del topic.
+        """
+        parts = [part for part in topic.split("/") if part.strip()]
+        if len(parts) < 5 or parts[0] != "empresas":
+            return
+        empresa = parts[1]
+        tipo = parts[3]
+        hardware = parts[-1]
+        # Las pantallas (y demás tipos excluidos) no son hardware con vida: no se refrescan.
+        if tipo.upper() in self._alive_excluded_types:
+            return
+        if not self._should_refresh_liveness(empresa, hardware):
+            return
+        thread = threading.Thread(
+            target=self._refresh_liveness_thread, args=(empresa, hardware), daemon=True
+        )
+        thread.start()
+
+    def _should_refresh_liveness(self, empresa: str, hardware: str) -> bool:
+        """True como máximo una vez por dispositivo cada `_alive_ttl` segundos.
+
+        Con Redis usa `SET key 1 NX EX ttl`: solo el primer mensaje de la ventana gana.
+        Sin Redis, cae a un diccionario en memoria por proceso.
+        """
+        key = f"hw:alive:{empresa}/{hardware}"
+        if self._alive_redis is not None:
+            try:
+                return bool(self._alive_redis.set(key, "1", nx=True, ex=self._alive_ttl))
+            except Exception as exc:
+                self.logger.warning("⚠️ Redis throttle falló (%s); fallback en memoria", exc)
+        now = time.time()
+        with self._alive_lock:
+            last = self._alive_local.get(key, 0)
+            if now - last < self._alive_ttl:
+                return False
+            self._alive_local[key] = now
+            return True
+
+    def _refresh_liveness_thread(self, empresa: str, hardware: str) -> None:
+        """Envía el refresco de vida al backend (fuera del hilo MQTT)."""
+        try:
+            ok = self.backend_client.send_physical_status(
+                empresa, hardware, {"estado": "Activo"}
+            )
+            if ok:
+                self.logger.info("💚 Vida refrescada empresa=%s hardware=%s", empresa, hardware)
+            else:
+                self.logger.warning(
+                    "💔 No se pudo refrescar vida empresa=%s hardware=%s", empresa, hardware
+                )
+        except Exception as exc:
+            self.logger.error("❌ Error refrescando vida: %s", exc)
 
     def _is_duplicate(self, topic: str) -> bool:
         """Retorna True si ya procesamos este topic dentro de la ventana de dedup."""

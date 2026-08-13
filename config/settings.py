@@ -125,3 +125,12 @@ class AppConfig:
     redis: RedisConfig = field(default_factory=RedisConfig)
     log_level: str = _env("LOG_LEVEL", "INFO")
     message_interval: int = _env_int("MESSAGE_INTERVAL", 20)
+    # Throttle de vida del hardware: cada dispositivo late cada ~2s, pero el backend
+    # solo necesita saber que sigue vivo. Se refresca physical-status como máximo una
+    # vez por dispositivo cada N segundos. El umbral de inactividad del backend es de
+    # 600s (HARDWARE_STATUS_STALE_SECONDS), así que 45s da margen de sobra.
+    hardware_status_refresh_seconds: int = _env_int("HARDWARE_STATUS_REFRESH_SECONDS", 45)
+    # Tipos de dispositivo que NO llevan estado de vida (no son hardware físico
+    # monitorizable). Las PANTALLAS, por ejemplo, solo muestran; no reportan vida.
+    # Lista separada por comas; se compara en mayúsculas contra el <TIPO> del topic.
+    hardware_status_excluded_types: str = _env("HARDWARE_STATUS_EXCLUDED_TYPES", "PANTALLA")
