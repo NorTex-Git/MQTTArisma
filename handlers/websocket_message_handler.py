@@ -385,7 +385,7 @@ class WebSocketMessageHandler:
     def _send_bulk_team(self,type_message:str,name_made:str,list_users:list[Dict],message)-> bool:
         try:
             list_validate = [u for u in list_users if u["disponible"]]
-            if not list_validate: 
+            if not list_validate:
                 self.logger.info("No hay usuario a quien enviarle informacion")
                 return True
             match type_message:
@@ -394,6 +394,35 @@ class WebSocketMessageHandler:
             return True
         except Exception as ex:
             self.logger.error(f"Error en _send_bulk_team {ex}")
+            return False
+
+    def _send_bulk_team_media(self, list_users: list[Dict], media_type: str, media_id: str,
+                              caption: str, name_made: str) -> bool:
+        """Reenvía una media entrante (image/audio/video/sticker) al equipo disponible.
+
+        Usa el media_id entrante directamente (envío inmediato, sin re-subir ni esperar
+        al guardado). Para image/video el caption lleva el nombre de quien la envía.
+        """
+        try:
+            list_validate = [u for u in list_users if u.get("disponible")]
+            if not list_validate:
+                self.logger.info("No hay usuario disponible a quien reenviar la media")
+                return True
+            friendly = self._get_first_name(name_made) or name_made or "Equipo"
+            full_caption = f"{friendly}: {caption}".strip(": ").strip() if caption else friendly
+            for usuario in list_validate:
+                numero = usuario.get("numero")
+                if not numero:
+                    continue
+                self.whatsapp_service.send_media_by_id(
+                    phone=numero,
+                    media_type=media_type,
+                    media_id=media_id,
+                    caption=full_caption,
+                )
+            return True
+        except Exception as ex:
+            self.logger.error(f"Error en _send_bulk_team_media {ex}")
             return False
     def _process_save_number(self, entry: Dict, cached_info: Dict) -> None:
         """Procesar mensaje de número guardado"""
@@ -711,6 +740,30 @@ class WebSocketMessageHandler:
                     por ahora se procesa solo mensajes de texto"""
                     if type_message:
                         inner_payload = entry.get(type_message) or {}
+
+                        # Media (imagen/audio/video/sticker): reenviar al equipo por su
+                        # media_id de inmediato (documentos NO). El guardado para el panel
+                        # lo hace RescueBack aparte al registrar el mensaje.
+                        if type_message in ("image", "audio", "video", "sticker") and isinstance(inner_payload, dict):
+                            media_id = inner_payload.get("id")
+                            caption = inner_payload.get("caption", "")
+                            if media_id:
+                                data_alert = self.backend_client.get_alert_by_id(alert_id=id_alert, user_id=id_user).get("alert", {}) or {}
+                                team = [u for u in (data_alert.get("numeros_telefonicos") or []) if u.get("numero") != number]
+                                if team:
+                                    self._send_bulk_team_media(
+                                        list_users=team,
+                                        media_type=type_message,
+                                        media_id=media_id,
+                                        caption=caption,
+                                        name_made=user,
+                                    )
+                                else:
+                                    self.logger.info("Media sin destinatarios de equipo")
+                            else:
+                                self.logger.info(f"Media {type_message} sin id, no se reenvía")
+                            return
+
                         if isinstance(inner_payload, dict):
                             body_text = (
                                 inner_payload.get("body")
@@ -1641,6 +1694,18 @@ class WebSocketMessageHandler:
             else:
                 forward_text = f"{friendly_sender}: {body_text}"
 
+            # Si es media (image/audio/video/sticker), reenviar el archivo real por su
+            # media_id en vez de "[image]".
+            media_type = msg_type if msg_type in ("image", "audio", "video", "sticker") else None
+            media_id = None
+            media_caption = ""
+            if media_type and isinstance(entry, dict):
+                media_inner = entry.get(msg_type) or {}
+                if isinstance(media_inner, dict):
+                    media_id = media_inner.get("id")
+                    cap = media_inner.get("caption", "")
+                    media_caption = f"{friendly_sender}: {cap}".strip(": ").strip() if cap else friendly_sender
+
             import threading
 
             def _fire():
@@ -1650,10 +1715,18 @@ class WebSocketMessageHandler:
                         if not manager_phone or manager_phone == sender_phone:
                             continue
                         try:
-                            self.whatsapp_service.send_individual_message(
-                                phone=manager_phone,
-                                message=forward_text
-                            )
+                            if media_type and media_id:
+                                self.whatsapp_service.send_media_by_id(
+                                    phone=manager_phone,
+                                    media_type=media_type,
+                                    media_id=media_id,
+                                    caption=media_caption,
+                                )
+                            else:
+                                self.whatsapp_service.send_individual_message(
+                                    phone=manager_phone,
+                                    message=forward_text
+                                )
                         except Exception:
                             continue
                 except Exception:

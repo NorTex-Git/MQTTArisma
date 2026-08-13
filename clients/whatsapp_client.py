@@ -143,6 +143,21 @@ class WhatsAppClient:
             self.logger.error(f"Error enviando mensaje individual: {e}")
             return None
     
+    def send_media_by_id(self, phone: str, media_type: str, media_id: str, caption: str = "") -> Optional[Dict]:
+        """Reenvía una media entrante (image/audio/video/sticker) por su media_id."""
+        try:
+            phone_clean = self._clean_phone_number(phone)
+            data = {
+                "phone": phone_clean,
+                "type": media_type,
+                "media_id": media_id,
+                "caption": caption,
+            }
+            return self.post('/api/send-media', data=data)
+        except Exception as e:
+            self.logger.error(f"Error reenviando media: {e}")
+            return None
+
     def send_bulk_individual(self, recipients: List[Dict], use_queue: bool = True) -> Optional[Dict]:
         """
         Enviar mensajes individuales masivos usando el endpoint send-bulk

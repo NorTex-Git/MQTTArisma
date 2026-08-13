@@ -93,6 +93,25 @@ class WhatsAppService:
             self.logger.error(f"Error en servicio WhatsApp: {e}")
             return False
     
+    def send_media_by_id(self, phone: str, media_type: str, media_id: str, caption: str = "") -> bool:
+        """Reenvía una media entrante (image/audio/video/sticker) a un número por su media_id."""
+        try:
+            if not self.config.enabled:
+                self.logger.warning("⚠️ Servicio WhatsApp deshabilitado")
+                return False
+            response = self.client.send_media_by_id(phone, media_type, media_id, caption)
+            if response:
+                self.stats["individual_messages_sent"] += 1
+                self.stats["total_recipients"] += 1
+                return True
+            self.stats["errors"] += 1
+            self.logger.error(f"Error reenviando media a {phone}")
+            return False
+        except Exception as e:
+            self.stats["errors"] += 1
+            self.logger.error(f"Error reenviando media: {e}")
+            return False
+
     def send_bulk_individual(self, recipients: List[Dict], use_queue: bool = True) -> bool:
         """
         Enviar mensajes individuales masivos usando el endpoint send-bulk
