@@ -16,6 +16,8 @@ is_hardware_report = MQTT_MESSAGE_HANDLER.is_hardware_report
 
 
 TOPIC = "empresas/Sunida/Principal/BOTONERA/Pulsador1"
+# El firmware agrega la IP como 6º segmento en los reportes de status.
+TOPIC_WITH_IP = "empresas/Sunida/Principal/BOTONERA/Perimetro1/192.168.1.35"
 
 
 class FakeRedis:
@@ -67,6 +69,25 @@ def test_device_alarm_and_status_are_hardware_reports():
         {"tipo_mensaje": "status", "id_dispositivo": "Pulsador1", "estado": "Activo"},
     )
     assert is_hardware_report(TOPIC, {"tipo_mensaje": "heartbeat"})
+
+
+def test_status_report_with_ip_suffix_is_hardware_report():
+    # El topic con IP (6 partes) debe reconocerse como reporte de hardware.
+    assert is_hardware_report(
+        TOPIC_WITH_IP,
+        {"tipo_mensaje": "status", "id_dispositivo": "Perimetro1", "estado": "Activo"},
+    )
+
+
+def test_handle_liveness_uses_hardware_not_ip_from_topic():
+    # Debe activar el hardware (parts[4]), no la IP (parts[5]).
+    redis_client = FakeRedis()
+    handler = build_handler(redis_client)
+    handler._handle_liveness(
+        TOPIC_WITH_IP,
+        {"tipo_mensaje": "status", "id_dispositivo": "Perimetro1", "estado": "Activo"},
+    )
+    handler._activate.assert_called_once_with("Sunida", "Perimetro1")
 
 
 def test_retained_or_mismatched_reports_do_not_refresh_liveness():
@@ -133,6 +154,12 @@ class HardwareLivenessTests(unittest.TestCase):
     )
     test_device_alarm_and_status_are_hardware_reports = staticmethod(
         test_device_alarm_and_status_are_hardware_reports
+    )
+    test_status_report_with_ip_suffix_is_hardware_report = staticmethod(
+        test_status_report_with_ip_suffix_is_hardware_report
+    )
+    test_handle_liveness_uses_hardware_not_ip_from_topic = staticmethod(
+        test_handle_liveness_uses_hardware_not_ip_from_topic
     )
     test_retained_or_mismatched_reports_do_not_refresh_liveness = staticmethod(
         test_retained_or_mismatched_reports_do_not_refresh_liveness

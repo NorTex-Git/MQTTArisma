@@ -26,8 +26,10 @@ def is_hardware_report(topic: str, data: Optional[Dict], retained: bool = False)
     if retained or not isinstance(data, dict):
         return False
 
+    # Topic: empresas/<empresa>/<sede>/<TIPO>/<hardware>[/<ip>]. Los reportes de status
+    # del firmware agregan la IP como 6º segmento, así que se aceptan 5 o 6 partes.
     parts = [part for part in topic.split("/") if part.strip()]
-    if len(parts) != 5 or parts[0] != "empresas":
+    if len(parts) not in (5, 6) or parts[0] != "empresas":
         return False
 
     message_type = str(data.get("tipo_mensaje") or "").strip().lower()
@@ -206,7 +208,8 @@ class MQTTMessageHandler:
         parts = [part for part in topic.split("/") if part.strip()]
         empresa = parts[1]
         tipo = parts[3]
-        hardware = parts[-1]
+        # parts[4] es el hardware; un posible parts[5] es la IP (reportes de status).
+        hardware = parts[4]
         # Las pantallas (y demás tipos excluidos) no son hardware con vida: no se refrescan.
         if tipo.upper() in self._alive_excluded_types:
             return
