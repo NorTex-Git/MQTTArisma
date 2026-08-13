@@ -17,6 +17,7 @@ from utils.alert_normalizer import (
 from clients.mqtt_publisher_lite import MQTTPublisherLite
 from config.settings import MQTTConfig
 from handlers.empresa_alert_handler import EmpresaAlertHandler
+from handlers.alert_action_templates import action_message
 from models.alert_user import make_whatsapp_user
 from datetime import datetime, timedelta
 
@@ -512,11 +513,14 @@ class WebSocketMessageHandler:
                             phone=number,
                             message="Ahora recibiras mensajes de los miembros del equipo"
                         )
+                        self._log_action_to_alert(alert_id=target_alert_id, phone=number, user=user, action="DISPONIBLE", user_id=id_user)
                     elif type_button == "APAGAR ALARMA":
                         if not user_obj.can_apagar():
                             self._send_permission_denied_message(number, user, "apagar la alarma")
                             return
                         try:
+                            # Registrar la acción ANTES de desactivar (luego la alerta queda inactiva).
+                            self._log_action_to_alert(alert_id=id_alert, phone=number, user=user, action="APAGAR", user_id=id_user)
                             response_desactivate = self._desactivate_alarm_to_back(id_alert=id_alert,cached=cached_info)
                             
                             # Verificar si la desactivación fue exitosa
@@ -645,11 +649,15 @@ class WebSocketMessageHandler:
                             )
                             self._send_options_user(number=number, user=user, can_manage_alarm=is_creator, is_alert_manager=is_alert_manager, is_in_alert=False)
                             return
+                        # Registrar la acción ANTES de desactivar: al apagarse la alerta
+                        # queda inactiva y el backend rechaza logs sobre alertas inactivas.
+                        self._log_action_to_alert(alert_id=id_alert, phone=number, user=user, action="APAGAR", user_id=id_user)
                         self._send_create_down_alarma(alert=data_alert,data_user=cached_info,list_users=data_user)
                     elif opcion == "UBICACION":
                         # Manager observando alerta ajena: enviar ubicación a su propio número
                         recipients_loc = data_user if data_user else [{"numero": number, "nombre": user}]
                         self._send_location_personalized_message(numeros_data=recipients_loc,tipo_alarma_info=data_alert)
+                        self._log_action_to_alert(alert_id=id_alert, phone=number, user=user, action="UBICACION", user_id=id_user)
                     elif opcion == "EMBARCADO":
                         if not user_obj.can_embarcado(data_alert):
                             self.whatsapp_service.send_individual_message(
@@ -668,6 +676,7 @@ class WebSocketMessageHandler:
                             empresa_id=cached_info.get("data", {}).get("empresa_id")
                         )
                         self._send_bulk_team(list_users=data_user_not_you,message="Estoy camino a la emergencia",name_made=user,type_message="text")
+                        self._log_action_to_alert(alert_id=id_alert, phone=number, user=user, action="EMBARCADO", user_id=id_user)
                     elif opcion == "CAMBIAR_ALERTA":
                         if not user_obj.can_cambiar_alerta():
                             self._send_permission_denied_message(number, user, "cambiar de alerta")
@@ -909,6 +918,7 @@ class WebSocketMessageHandler:
                     phone=number,
                     message="Ahora recibiras mensajes de los miembros del equipo"
                 )
+                self._log_action_to_alert(alert_id=target_alert_id, phone=number, user=user, action="DISPONIBLE", user_id=exist_alert.get("id", ""))
                 return
 
         # Usuario con ambos roles: pedir que elija modo primero
@@ -1714,6 +1724,28 @@ class WebSocketMessageHandler:
             threading.Thread(target=_fire, daemon=True).start()
         except Exception as exc:
             self.logger.debug(f"_log_message_to_alert ignorado: {exc}")
+
+    def _log_action_to_alert(self, alert_id: str, phone: str, user: str,
+                             action: str, user_id: Optional[str] = None) -> None:
+        """Registra la ACCIÓN del usuario (embarcado/apagar/disponible/ubicación)
+        como un mensaje de conversación visible en el panel de la empresa.
+
+        Se registra como texto limpio (entry=None → is_navigation=False) para que
+        NO se filtre como ruido de menú y aparezca en el chat en vivo.
+        """
+        body = action_message(action, user)
+        if not body:
+            return
+        self._log_message_to_alert(
+            alert_id=alert_id,
+            phone=phone,
+            direction="in",
+            msg_type="text",
+            body=body,
+            user_id=user_id,
+            user_name=user,
+            user_role="usuario",
+        )
 
     def _resolve_empresa_id(self, phone: str, current_empresa_id: Optional[str] = None) -> Optional[str]:
         """Obtener empresa_id a partir del número de teléfono"""
